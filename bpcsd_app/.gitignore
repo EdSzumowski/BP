@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment — do NOT commit the venv
+venv/
+env/
+.venv/
+
+# Streamlit secrets — NEVER commit this
+.streamlit/secrets.toml
+
+# Runtime cache — too large/ephemeral for git
+cache/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
