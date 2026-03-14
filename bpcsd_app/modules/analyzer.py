@@ -108,8 +108,10 @@ def parse_revenue_status(text):
             "earned":         _parse_dollar(tm.group(4)),
             "unearned":       _parse_dollar(tm.group(5)),
         }
-        if totals["revised_budget"]:
+        if totals.get("revised_budget"):
             totals["pct_collected"] = totals["earned"] / totals["revised_budget"] * 100
+        else:
+            totals["pct_collected"] = None
 
     # Line items
     items = []

@@ -262,7 +262,7 @@ def build_trend_pdf(fiscal_year: str, report_key: str, report_meta: dict,
                 r["month"],
                 f"${r['earned']:,.0f}",
                 f"${r['budget']:,.0f}",
-                f"{r['pct']:.1f}%",
+                f"{r['pct']:.1f}%" if r["pct"] is not None else "—",
                 r.get("date_range", "—"),
             ] for r in ct]
             sections.append({
@@ -409,7 +409,7 @@ def build_yoy_pdf(report_key: str, report_meta: dict, month_str: str,
                 r.get("date_range", "—"),
                 "${:,.0f}".format(r["earned"]),
                 "${:,.0f}".format(r["budget"]),
-                "{:.1f}%".format(r["pct"]),
+                "{:.1f}%".format(r["pct"]) if r["pct"] is not None else "—",
             ] for r in totals_rows]
             sections.append({"type": "table", "headers": headers, "rows": rows})
 
@@ -486,6 +486,26 @@ if not _check_boarddocs_auth():
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SIDEBAR
 # ═══════════════════════════════════════════════════════════════════════════════
+# ── Safe defaults for mode-gated variables ───────────────────────────────────
+# Streamlit reruns the whole script on each interaction, so variables set in
+# sidebar elif-branches must have defaults here or other-mode panels will crash.
+disc_refresh   = False
+run_discovery  = False
+run_trend      = False
+run_yoy        = False
+load_chat      = False
+chat_reports   = {}
+chat_fy        = list(FISCAL_YEARS.keys())[0] if FISCAL_YEARS else ""
+fiscal_year    = list(FISCAL_YEARS.keys())[0] if FISCAL_YEARS else ""
+months_in_fy   = []
+selected_reports = {}
+yoy_report_key = None
+yoy_category   = "finance"
+yoy_report_meta = {}
+yoy_month_num  = "01"
+yoy_month_str  = "January"
+yoy_years_selected = {}
+
 with st.sidebar:
     st.markdown("## 🏫 BPCSD Board Analysis")
     st.markdown("*Broadalbin-Perth Central School District*")
@@ -854,7 +874,7 @@ if mode == "📈 School Year Trend" and run_trend:
                     "Month":          r["month"],
                     "YTD Earned":     f"${r['earned']:,.0f}",
                     "Revised Budget": f"${r['budget']:,.0f}",
-                    "% Collected":    f"{r['pct']:.1f}%",
+                    "% Collected":    f"{r['pct']:.1f}%" if r['pct'] is not None else "—",
                     "Period":         r.get("date_range",""),
                 } for r in ct])
                 st.dataframe(ct_df, use_container_width=True, hide_index=True)
@@ -1032,7 +1052,7 @@ if mode == "📊 Year-over-Year" and run_yoy:
                 "Period":         r.get("date_range",""),
                 "YTD Earned":     "${:,.0f}".format(r["earned"]),
                 "Revised Budget": "${:,.0f}".format(r["budget"]),
-                "% Collected":    "{:.1f}%".format(r["pct"]),
+                "% Collected":    "{:.1f}%".format(r["pct"]) if r["pct"] is not None else "—",
             } for r in totals_rows])
             st.dataframe(t_df, use_container_width=True, hide_index=True)
 
@@ -1124,6 +1144,9 @@ if mode == "🔍 Discover Reports":
         "Scans every meeting agenda in BoardDocs, collects all attachments, "
         "and automatically clusters them by report type across all years."
     )
+
+    # Build authenticated BoardDocs client (same pattern as Trend/YoY panels)
+    client = get_client(st.session_state["username"], st.session_state["password"])
 
     catalog = None if disc_refresh else get_report_catalog()
 
@@ -1235,6 +1258,9 @@ if mode == "🔍 Discover Reports":
 # ═══════════════════════════════════════════════════════════════════════════════
 if mode == "💬 Chat with Reports":
     st.markdown("## 💬 Chat with Board Reports")
+
+    # Build authenticated client for fetching reports on demand
+    client = get_client(st.session_state["username"], st.session_state["password"])
 
     if not st.session_state.get("llm_api_key"):
         st.warning("Enter your AI API key in the sidebar to enable chat.")
