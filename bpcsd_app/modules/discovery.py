@@ -83,6 +83,28 @@ def discover_all_meetings(client) -> dict:
 
     meetings = {}
 
+    def _merge(parsed: dict):
+        """Merge parsed meetings without clobbering same-month special/reorg meetings."""
+        for key, val in parsed.items():
+            if key not in meetings:
+                meetings[key] = val
+                continue
+
+            # Prefer richer labels and preserve unique IDs by adding suffixes.
+            existing = meetings[key]
+            if existing.get("id") == val.get("id"):
+                if len(str(val.get("label", ""))) > len(str(existing.get("label", ""))):
+                    meetings[key] = val
+                continue
+
+            mtype = val.get("type", "regular")
+            candidate = f"{key}-{mtype}"
+            i = 2
+            while candidate in meetings and meetings[candidate].get("id") != val.get("id"):
+                candidate = f"{key}-{mtype}{i}"
+                i += 1
+            meetings[candidate] = val
+
     # Try the hidden dropdown used during initial discovery
     # The board's agenda edit page lists all meetings in a <select>
     try:
@@ -98,7 +120,7 @@ def discover_all_meetings(client) -> dict:
         html = r.read().decode("utf-8", errors="replace")
         parsed = _parse_meetings_list(html)
         if parsed:
-            meetings.update(parsed)
+            _merge(parsed)
     except Exception:
         pass
 
@@ -112,7 +134,7 @@ def discover_all_meetings(client) -> dict:
         html = r.read().decode("utf-8", errors="replace")
         parsed = _parse_meetings_list(html)
         if parsed:
-            meetings.update(parsed)
+            _merge(parsed)
     except Exception:
         pass
 
@@ -126,20 +148,49 @@ def discover_all_meetings(client) -> dict:
         html = r.read().decode("utf-8", errors="replace")
         parsed = _parse_meetings_list(html)
         if parsed:
-            meetings.update(parsed)
+            _merge(parsed)
     except Exception:
         pass
+
+    # Probe year-specific meeting list variants used by some BoardDocs installs.
+    # This improves discovery coverage when default pages only show one year.
+    current_year = time.gmtime().tm_year
+    for year in range(current_year - 6, current_year + 3):
+        probes = [
+            ("GET", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open&year={year}", None),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"year": str(year)}),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"schoolyear": str(year)}),
+        ]
+        for method, url, body in probes:
+            try:
+                req = urllib.request.Request(
+                    url,
+                    data=(urllib.parse.urlencode(body).encode() if body else None),
+                    headers={
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "text/html,*/*",
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                    method=method,
+                )
+                r = client.opener.open(req, timeout=20)
+                html = r.read().decode("utf-8", errors="replace")
+                parsed = _parse_meetings_list(html)
+                if parsed:
+                    _merge(parsed)
+            except Exception:
+                continue
 
     # Seed with known-good IDs so discovery doesn't start from zero
     from modules.registry import KNOWN_MEETINGS
     for ym, info in KNOWN_MEETINGS.items():
         if ym not in meetings:
-            meetings[ym] = {
+            _merge({ym: {
                 "id":    info["id"],
                 "label": info["label"],
                 "date":  _ym_to_date(ym),
                 "type":  info.get("type", "regular"),
-            }
+            }})
 
     return dict(sorted(meetings.items()))
 
@@ -152,6 +203,12 @@ def _parse_meetings_list(html: str) -> dict:
     """
     meetings = {}
 
+    def _insert(ym: str, mtype: str, value: dict):
+        key = _meeting_key(ym, mtype, meetings)
+        if key in meetings and meetings[key].get("id") != value.get("id"):
+            key = _meeting_key(ym, f"{mtype}2", meetings)
+        meetings[key] = value
+
     # Pattern 1: <option value="ID">label</option>
     for m in re.finditer(
         r'value="([A-Z0-9]{10,16})"[^>]*>\s*([^<]{10,80}?)\s*</option>',
@@ -162,8 +219,8 @@ def _parse_meetings_list(html: str) -> dict:
         if ym:
             mtype = "reorg" if "reorg" in label.lower() else (
                 "special" if "special" in label.lower() else "regular")
-            meetings[ym] = {"id": mid, "label": label,
-                            "date": _ym_to_date(ym), "type": mtype}
+            _insert(ym, mtype, {"id": mid, "label": label,
+                                "date": _ym_to_date(ym), "type": mtype})
 
     # Pattern 2: data-meetingid="..." data-date="YYYY-MM-DD"
     for m in re.finditer(
@@ -172,16 +229,27 @@ def _parse_meetings_list(html: str) -> dict:
     ):
         mid, date = m.group(1), m.group(2)
         ym = date[:7]  # YYYY-MM
-        if ym not in meetings:
-            meetings[ym] = {"id": mid, "label": date, "date": date, "type": "regular"}
+        _insert(ym, "regular", {"id": mid, "label": date, "date": date, "type": "regular"})
 
     # Pattern 3: JSON array [{id: "...", date: "..."}]
     for m in re.finditer(r'"id"\s*:\s*"([A-Z0-9]{10,16})"[^}]*?"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"',
                           html, re.I):
         mid, date = m.group(1), m.group(2)
         ym = date[:7]
-        if ym not in meetings:
-            meetings[ym] = {"id": mid, "label": date, "date": date, "type": "regular"}
+        _insert(ym, "regular", {"id": mid, "label": date, "date": date, "type": "regular"})
+
+    # Pattern 4: JSON with m/d/YYYY dates
+    for m in re.finditer(r'"id"\s*:\s*"([A-Z0-9]{10,16})"[^}]*?"date"\s*:\s*"(\d{1,2}/\d{1,2}/\d{4})"',
+                         html, re.I):
+        mid, date = m.group(1), m.group(2)
+        mm, _dd, yyyy = date.split("/")
+        ym = f"{yyyy}-{int(mm):02d}"
+        _insert(ym, "regular", {
+            "id": mid,
+            "label": date,
+            "date": f"{yyyy}-{int(mm):02d}-01",
+            "type": "regular"
+        })
 
     return meetings
 
@@ -202,6 +270,21 @@ def _label_to_ym(label: str) -> str | None:
     if m2:
         return f"{m2.group(1)}-{m2.group(2)}"
     return None
+
+
+def _meeting_key(ym: str, mtype: str, existing: dict) -> str:
+    """Return stable key; append suffix for non-regular meetings in same month."""
+    if ym not in existing:
+        return ym
+    if mtype == "regular" and ym in existing:
+        return ym
+
+    key = f"{ym}-{mtype}"
+    i = 2
+    while key in existing:
+        key = f"{ym}-{mtype}{i}"
+        i += 1
+    return key
 
 
 def _ym_to_date(ym: str) -> str:
