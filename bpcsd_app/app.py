@@ -15,7 +15,10 @@ import streamlit as st
 import datetime
 import time
 
-from modules.registry import REPORT_TYPES, KNOWN_MEETINGS, FISCAL_YEARS, MONTH_LABELS
+from modules.registry import (
+    REPORT_TYPES, KNOWN_MEETINGS, FISCAL_YEARS, MONTH_LABELS,
+    get_report_category, get_report_meta
+)
 from modules.cache import (
     get_cached_text, save_cached_text,
     get_cached_item_id, save_cached_item_id,
@@ -146,9 +149,13 @@ def find_meeting_key(ym: str):
 
 
 # ── Helper: fetch + extract one report ───────────────────────────────────────
-def fetch_report(client, meeting_ym: str, report_key: str, report_meta: dict, status_placeholder):
+def fetch_report(client, meeting_ym: str, report_key: str, report_meta: dict,
+                 status_placeholder, category: str = "director"):
     """
-    Fetch and extract text for a report at a specific meeting.
+    Fetch and extract text for one report at one meeting.
+    Strategy differs by category:
+      finance  → Finance Committee item → attachment filename fuzzy match
+      director → Director's own agenda item → first PDF attachment
     Returns (text_or_None, status_str)
     """
     meeting_key = find_meeting_key(meeting_ym)
@@ -158,40 +165,46 @@ def fetch_report(client, meeting_ym: str, report_key: str, report_meta: dict, st
     meeting_info = KNOWN_MEETINGS[meeting_key]
     meeting_id   = meeting_info["id"]
     search_terms = report_meta["search"]
+    label        = report_meta["label"]
 
-    # Check item_id cache
-    cached_item_id = get_cached_item_id(meeting_ym, report_key)
-
-    if cached_item_id:
-        # Check text cache too
-        cached_text = get_cached_text(report_key, meeting_ym, cached_item_id)
-        if cached_text:
-            return cached_text, "cached"
+    # Cache key: use report_key + meeting_ym (no item_id needed for finance path)
+    cache_id = f"{category}_{meeting_ym}"
+    cached_text = get_cached_text(report_key, meeting_ym, cache_id)
+    if cached_text:
+        return cached_text, "✅ cached"
 
     try:
-        status_placeholder.info(f"🔍 Finding '{report_meta['label']}' in {meeting_info['label']}…")
-        item_id, _ = client.find_report_item(meeting_id, search_terms)
+        if category == "finance":
+            # ── Finance path: attachment on Finance Committee item ────────────
+            status_placeholder.info(
+                f"📎 Searching Finance Committee attachments for '{label}' "
+                f"in {meeting_info['label']}…")
+            url, result = client.find_finance_attachment(meeting_id, search_terms)
+            if url is None:
+                return None, f"Not found — {result}"
+            fname = result  # result is filename when url is not None
+            status_placeholder.info(f"⬇️ Downloading {fname}…")
 
-        if not item_id:
-            return None, "Not found at this meeting"
+        else:
+            # ── Director path: find agenda item by title ──────────────────────
+            status_placeholder.info(
+                f"🔍 Finding '{label}' agenda item in {meeting_info['label']}…")
+            url, result = client.find_director_attachment(meeting_id, search_terms)
+            if url is None:
+                return None, f"Not found — {result}"
+            fname = result
+            status_placeholder.info(f"⬇️ Downloading {fname}…")
 
-        save_cached_item_id(meeting_ym, report_key, item_id)
-
-        # Check text cache now that we have item_id
-        cached_text = get_cached_text(report_key, meeting_ym, item_id)
-        if cached_text:
-            return cached_text, "cached (text)"
-
-        status_placeholder.info(f"📎 Getting files for '{report_meta['label']}'…")
-        files = client.get_item_files(item_id)
-
-        if not files:
-            return None, "No PDF files attached"
-
-        # Download first PDF
-        url, fname = files[0]
-        status_placeholder.info(f"⬇️ Downloading {fname}…")
         pdf_bytes = client.download_file(url)
+        status_placeholder.info(f"📄 Extracting text from {fname}…")
+        from modules.extractor import extract_text_from_pdf_bytes
+        text = extract_text_from_pdf_bytes(pdf_bytes)
+
+        save_cached_text(report_key, meeting_ym, cache_id, text)
+        return text, f"fetched ({fname})"
+
+    except Exception as e:
+        return None, f"Error: {e}"
 
         status_placeholder.info(f"📄 Extracting text from {fname}…")
         from modules.extractor import extract_text_from_pdf_bytes
@@ -610,7 +623,8 @@ if mode == "📈 School Year Trend" and run_trend:
             month_part = parts[1]
             month_name = MONTH_LABELS.get(month_part, ym)
 
-            text, status = fetch_report(client, ym, rpt_key, rpt_meta, status_msg)
+            text, status = fetch_report(client, ym, rpt_key, rpt_meta, status_msg,
+                                           category=category)
             month_results[month_name] = text
 
             task_done += 1
@@ -779,7 +793,8 @@ if mode == "📊 Year-over-Year Comparison" and run_yoy:
             status_msg.warning(f"Month {yoy_month_str} not found in FY {fy}")
         else:
             text, status = fetch_report(
-                client, ym_match, yoy_report_key, yoy_report_meta, status_msg
+                client, ym_match, yoy_report_key, yoy_report_meta, status_msg,
+                category=get_report_category(yoy_report_key)
             )
             reports_by_year[fy] = text or ""
             status_msg.info(f"FY {fy}: {status}")
