@@ -227,6 +227,16 @@ def _safe(text):
     return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _fmt_currency(value):
+    """Format number-like values as currency, returning em dash for missing values."""
+    if value is None:
+        return "—"
+    try:
+        return "${:,.0f}".format(float(value))
+    except (TypeError, ValueError):
+        return "—"
+
+
 def build_trend_pdf(fiscal_year: str, report_key: str, report_meta: dict,
                     category: str, analysis: dict, month_results: dict) -> bytes:
     from modules.pdf_output import generate_pdf
@@ -407,8 +417,8 @@ def build_yoy_pdf(report_key: str, report_meta: dict, month_str: str,
             rows = [[
                 r["year"],
                 r.get("date_range", "—"),
-                "${:,.0f}".format(r["earned"]),
-                "${:,.0f}".format(r["budget"]),
+                _fmt_currency(r.get("earned")),
+                _fmt_currency(r.get("budget")),
                 "{:.1f}%".format(r["pct"]) if r["pct"] is not None else "—",
             ] for r in totals_rows]
             sections.append({"type": "table", "headers": headers, "rows": rows})
@@ -431,7 +441,7 @@ def build_yoy_pdf(report_key: str, report_meta: dict, month_str: str,
                     yd = row["years"].get(fy)
                     if yd:
                         pct_s = " ({:.0f}%)".format(yd["pct"]) if yd["pct"] is not None else ""
-                        r.append("${:,.0f}{}".format(yd["earned"], pct_s))
+                        r.append(f"{_fmt_currency(yd.get('earned'))}{pct_s}")
                     else:
                         r.append("—")
                 li_rows.append(r)
@@ -1050,8 +1060,8 @@ if mode == "📊 Year-over-Year" and run_yoy:
             t_df = pd.DataFrame([{
                 "Fiscal Year":    r["year"],
                 "Period":         r.get("date_range",""),
-                "YTD Earned":     "${:,.0f}".format(r["earned"]),
-                "Revised Budget": "${:,.0f}".format(r["budget"]),
+                "YTD Earned":     _fmt_currency(r.get("earned")),
+                "Revised Budget": _fmt_currency(r.get("budget")),
                 "% Collected":    "{:.1f}%".format(r["pct"]) if r["pct"] is not None else "—",
             } for r in totals_rows])
             st.dataframe(t_df, use_container_width=True, hide_index=True)
@@ -1070,7 +1080,7 @@ if mode == "📊 Year-over-Year" and run_yoy:
                         yd = row["years"].get(fy)
                         if yd:
                             pct_s = " ({:.0f}%)".format(yd["pct"]) if yd["pct"] is not None else ""
-                            r[fy] = "${:,.0f}{}".format(yd["earned"], pct_s)
+                            r[fy] = f"{_fmt_currency(yd.get('earned'))}{pct_s}"
                         else:
                             r[fy] = "—"
                     li_rows.append(r)

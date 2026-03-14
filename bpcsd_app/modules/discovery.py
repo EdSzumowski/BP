@@ -56,7 +56,6 @@ _SECTION_MAP = [
     (r"communications",              "Communications"),
     (r"curriculum",                  "Curriculum"),
     (r"transportation|building",     "Transportation & Buildings"),
-    (r"personnel|human.?resources",  "Personnel"),
     (r"public.?comment",             "Public Comment"),
     (r"consent.?agenda",             "Consent Agenda"),
     (r"new.?business",               "New Business"),
@@ -155,11 +154,15 @@ def discover_all_meetings(client) -> dict:
     # Probe year-specific meeting list variants used by some BoardDocs installs.
     # This improves discovery coverage when default pages only show one year.
     current_year = time.gmtime().tm_year
-    for year in range(current_year - 6, current_year + 3):
+    for year in range(current_year - 15, current_year + 3):
         probes = [
             ("GET", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open&year={year}", None),
+            ("GET", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open&schoolyear={year}", None),
+            ("GET", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingList?open&year={year}", None),
             ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"year": str(year)}),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"schoolYear": str(year)}),
             ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"schoolyear": str(year)}),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingList?open", {"year": str(year)}),
         ]
         for method, url, body in probes:
             try:
@@ -387,8 +390,9 @@ def _group_into_sections(raw_items: list) -> dict:
 
     for item in raw_items:
         title = item["title"]
+        level = item.get("level")
         # Check if this item is a section header
-        canonical = _canonicalize_section(title)
+        canonical = _canonicalize_section(title, level)
         if canonical:
             current_section = canonical
             if current_section not in sections:
@@ -407,8 +411,17 @@ def _group_into_sections(raw_items: list) -> dict:
     return {k: v for k, v in sections.items() if v["items"]}
 
 
-def _canonicalize_section(title: str) -> str | None:
+def _canonicalize_section(title: str, level: int | None = None) -> str | None:
     """Return canonical section name if title looks like a section header, else None."""
+    if level is not None and level >= 2:
+        return None
+
+    # Skip long, code-heavy agenda items that are likely reports/motions, not sections.
+    if len(title) > 70:
+        return None
+    if re.search(r"\b\d{3,}\b", title):
+        return None
+
     t = title.lower()
     for pattern, canonical in _SECTION_MAP:
         if re.search(pattern, t):
