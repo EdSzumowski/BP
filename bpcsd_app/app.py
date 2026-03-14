@@ -22,7 +22,11 @@ from modules.registry import (
 from modules.cache import (
     get_cached_text, save_cached_text,
     get_cached_item_id, save_cached_item_id,
-    list_cached_reports, clear_cache
+    list_cached_reports, clear_cache, clear_all_cache,
+    get_cache_inventory, get_cache_stats,
+    delete_cache_entry, clear_discovery_cache,
+    get_report_catalog, save_report_catalog,
+    get_cached_meetings, save_cached_meetings,
 )
 
 # ── No hardcoded or stored credentials ───────────────────────────────────────
@@ -218,95 +222,151 @@ def fetch_report(client, meeting_ym: str, report_key: str, report_meta: dict,
 
 
 # ── Helper: build PDF for trend analysis ─────────────────────────────────────
+def _safe(text):
+    """Escape HTML special chars for PDF paragraphs."""
+    return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def build_trend_pdf(fiscal_year: str, report_key: str, report_meta: dict,
                     category: str, analysis: dict, month_results: dict) -> bytes:
     from modules.pdf_output import generate_pdf
 
     label = report_meta["label"]
     sections = []
+    months_in_fy = FISCAL_YEARS.get(fiscal_year, [])
 
-    # Executive Summary
+    # ── Executive Summary ─────────────────────────────────────────────────────
     sections.append({"type": "heading1", "text": "Executive Summary"})
-    sections.append({"type": "paragraph", "text": analysis.get("summary", "")})
+    sections.append({"type": "paragraph", "text": _safe(analysis.get("summary", ""))})
 
-    # Flags
+    # ── Flags ──────────────────────────────────────────────────────────────────
     flags = analysis.get("flags", [])
     if flags:
-        sections.append({"type": "heading2", "text": "Flags & Observations"})
+        sections.append({"type": "heading2", "text": "Flags &amp; Observations"})
         for flag in flags:
-            pri  = flag.get("priority", "medium")
-            item = flag.get("item", "")
-            obs  = flag.get("observation", "")
-            sections.append({"type": "flag", "text": f"<b>{item}:</b> {obs}", "priority": pri})
-        sections.append({"type": "spacer", "height": 12})
-
-    # Month-by-month table
-    months_in_fy = FISCAL_YEARS.get(fiscal_year, [])
-    sections.append({"type": "heading2", "text": "Month-by-Month Summary"})
-
-    if category == "finance":
-        headers = ["Month", "Status", "Top Amount", "YTD %", "Text Length"]
-        rows = []
-        for ym in months_in_fy:
-            month_num = ym.split("-")[1]
-            month_name = MONTH_LABELS.get(month_num, ym)
-            ms = analysis.get("month_summaries", {}).get(month_name, {})
-            status   = ms.get("status", "no_data")
-            top_amt  = ms.get("top_dollar", "—")
-            pct      = ms.get("pct_ytd", "—")
-            chars    = str(ms.get("text_length", 0))
-            status_lbl = "✅ Extracted" if status == "extracted" else "⚠ No data"
-            rows.append([month_name, status_lbl, top_amt, pct, chars])
-        sections.append({
-            "type": "table",
-            "headers": headers,
-            "rows": rows,
-        })
-    else:
-        # Director
-        all_themes = sorted(analysis.get("themes", {}).keys())
-        headers = ["Month", "Status", "Topics Found"]
-        rows = []
-        for ym in months_in_fy:
-            month_num  = ym.split("-")[1]
-            month_name = MONTH_LABELS.get(month_num, ym)
-            ms = analysis.get("month_summaries", {}).get(month_name, {})
-            status = ms.get("status", "no_data")
-            topics = ", ".join(ms.get("topics", [])) or "—"
-            status_lbl = "✅ Extracted" if status == "extracted" else "⚠ No data"
-            rows.append([month_name, status_lbl, topics])
-        sections.append({
-            "type": "table",
-            "headers": headers,
-            "rows": rows,
-        })
-
-        # Themes table
-        if analysis.get("themes"):
-            sections.append({"type": "heading2", "text": "Theme Frequency Table"})
-            theme_rows = []
-            for topic, months in sorted(analysis["themes"].items(), key=lambda x: -len(x[1])):
-                theme_rows.append([topic, str(len(months)), ", ".join(months) or "—"])
+            pri = flag.get("priority", "medium")
             sections.append({
-                "type": "table",
-                "headers": ["Theme", "# Months", "Months Present"],
-                "rows": theme_rows,
+                "type": "flag",
+                "text": f"<b>{_safe(flag.get('item',''))}:</b> {_safe(flag.get('observation',''))}",
+                "priority": pri
+            })
+        sections.append({"type": "spacer", "height": 8})
+
+    # ── Finance: collection rate table + full line-item breakdown ─────────────
+    if category == "finance":
+        ct = analysis.get("collection_table", [])
+        if ct:
+            sections.append({"type": "heading2", "text": "YTD Collection Rate by Month"})
+            headers = ["Month", "YTD Earned", "Revised Budget", "% Collected", "Period Covered"]
+            rows = [[
+                r["month"],
+                f"${r['earned']:,.0f}",
+                f"${r['budget']:,.0f}",
+                f"{r['pct']:.1f}%",
+                r.get("date_range", "—"),
+            ] for r in ct]
+            sections.append({
+                "type": "table", "headers": headers, "rows": rows,
+                "col_widths": [2.8*28.35, 2.5*28.35, 2.5*28.35, 1.8*28.35, 3.0*28.35]
             })
 
-    # Month detail previews
-    sections.append({"type": "pagebreak"})
-    sections.append({"type": "heading1", "text": "Document Previews by Month"})
-    for ym in months_in_fy:
-        month_num  = ym.split("-")[1]
-        month_name = MONTH_LABELS.get(month_num, ym)
-        text = month_results.get(month_name)
-        sections.append({"type": "heading2", "text": month_name})
-        if text:
-            preview = text[:800].replace("<", "&lt;").replace(">", "&gt;")
-            sections.append({"type": "paragraph", "text": preview})
-        else:
-            sections.append({"type": "callout", "text": "No report data available for this month."})
-        sections.append({"type": "rule"})
+        # Notable items (top earners in most recent month)
+        notable = analysis.get("notable_items", [])
+        if notable:
+            sections.append({"type": "heading2", "text": "Top Revenue Sources (Most Recent Month)"})
+            n_headers = ["Account", "Description", "Earned", "% of Budget"]
+            n_rows = [[
+                it["account"],
+                it["description"][:45],
+                f"${it['earned']:,.0f}",
+                f"{it['pct_collected']:.1f}%" if it["pct_collected"] is not None else "—",
+            ] for it in notable]
+            sections.append({"type": "table", "headers": n_headers, "rows": n_rows})
+
+        # Line-item trend table (all accounts across all months)
+        line_items = analysis.get("line_items", {})
+        ct_months = [r["month"] for r in ct]
+        if line_items and ct_months:
+            sections.append({"type": "pagebreak"})
+            sections.append({"type": "heading1", "text": "Line-Item Revenue Trend"})
+            sections.append({"type": "paragraph",
+                "text": "YTD Revenue Earned per account code across the school year. "
+                        "Percentages show collection rate vs. revised budget."})
+
+            li_headers = ["Account", "Description"] + ct_months
+            li_rows = []
+            for acc, data in sorted(line_items.items()):
+                desc = data["description"][:35]
+                row = [acc, desc]
+                for m in ct_months:
+                    md = data["monthly"].get(m)
+                    if md:
+                        pct_s = f" ({md['pct']:.0f}%)" if md["pct"] is not None else ""
+                        row.append(f"${md['earned']:,.0f}{pct_s}")
+                    else:
+                        row.append("—")
+                li_rows.append(row)
+            col_w = [1.6*28.35, 3.5*28.35] + [1.8*28.35]*len(ct_months)
+            sections.append({"type": "table", "headers": li_headers, "rows": li_rows,
+                              "col_widths": col_w})
+
+    # ── Director: month-by-month topic grid + per-month narratives ────────────
+    else:
+        sections.append({"type": "heading2", "text": "Month-by-Month Overview"})
+        m_headers = ["Month", "Status", "Key Topics"]
+        m_rows = []
+        for ym in months_in_fy:
+            month_name = MONTH_LABELS.get(ym.split("-")[1], ym)
+            ms = analysis.get("month_summaries", {}).get(month_name, {})
+            if ms.get("status") == "extracted":
+                topics = ", ".join(ms.get("topics", [])) or "—"
+                m_rows.append([month_name, "✅", topics])
+            else:
+                m_rows.append([month_name, "—", "No data"])
+        sections.append({"type": "table", "headers": m_headers, "rows": m_rows})
+
+        # Theme frequency
+        themes = analysis.get("themes", {})
+        if themes:
+            sections.append({"type": "heading2", "text": "Theme Frequency"})
+            t_rows = [[t, str(len(m)), ", ".join(m) or "—"]
+                      for t, m in sorted(themes.items(), key=lambda x: -len(x[1])) if m]
+            if t_rows:
+                sections.append({"type": "table",
+                    "headers": ["Theme", "# Months", "Months Present"],
+                    "rows": t_rows})
+
+        # Per-month narrative detail
+        sections.append({"type": "pagebreak"})
+        sections.append({"type": "heading1", "text": "Month-by-Month Detail"})
+        for ym in months_in_fy:
+            month_name = MONTH_LABELS.get(ym.split("-")[1], ym)
+            ms = analysis.get("month_summaries", {}).get(month_name, {})
+            sections.append({"type": "heading2", "text": month_name})
+            if ms.get("status") != "extracted":
+                sections.append({"type": "callout", "text": "No report data for this month."})
+                continue
+
+            # Lead paragraph (first real sentences from the report)
+            lead = ms.get("lead", "")
+            if lead:
+                sections.append({"type": "paragraph", "text": _safe(lead)})
+
+            # Numeric facts extracted
+            facts = ms.get("facts", [])
+            if facts:
+                sections.append({"type": "heading3", "text": "Key Statistics"})
+                for fact in facts[:8]:
+                    sections.append({"type": "bullet", "text": _safe(fact[:200])})
+
+            # Topic-specific quotes
+            topic_content = ms.get("topic_content", {})
+            for topic, sents in list(topic_content.items())[:6]:
+                if sents:
+                    sections.append({"type": "heading3", "text": topic})
+                    for s in sents[:2]:
+                        sections.append({"type": "bullet", "text": _safe(s)})
+            sections.append({"type": "rule"})
 
     return generate_pdf(
         title=f"{label} — School Year Trend",
@@ -318,58 +378,97 @@ def build_trend_pdf(fiscal_year: str, report_key: str, report_meta: dict,
 
 
 def build_yoy_pdf(report_key: str, report_meta: dict, month_str: str,
-                  analysis: dict) -> bytes:
+                  analysis: dict, category: str = "finance") -> bytes:
     from modules.pdf_output import generate_pdf
 
     label = report_meta["label"]
     sections = []
 
     sections.append({"type": "heading1", "text": "Year-over-Year Summary"})
-    sections.append({"type": "paragraph", "text": analysis.get("summary", "")})
+    sections.append({"type": "paragraph", "text": _safe(analysis.get("summary", ""))})
 
     flags = analysis.get("flags", [])
     if flags:
-        sections.append({"type": "heading2", "text": "Flags"})
+        sections.append({"type": "heading2", "text": "Key Findings"})
         for flag in flags:
-            pri  = flag.get("priority", "medium")
-            item = flag.get("item", "")
-            obs  = flag.get("observation", "")
-            sections.append({"type": "flag", "text": f"<b>{item}:</b> {obs}", "priority": pri})
+            pri = flag.get("priority", "medium")
+            sections.append({
+                "type": "flag",
+                "text": "<b>" + _safe(flag.get("item","")) + ":</b> " + _safe(flag.get("observation","")),
+                "priority": pri
+            })
+        sections.append({"type": "spacer", "height": 8})
 
-    # Year comparison table
-    sections.append({"type": "heading2", "text": "Year Comparison"})
-    year_summaries = analysis.get("year_summaries", {})
-    headers = ["Fiscal Year", "Status", "Document Length", "Preview"]
-    rows = []
-    for yr in analysis.get("years", []):
-        ys     = year_summaries.get(yr, {})
-        status = "✅ Extracted" if ys.get("status") == "extracted" else "⚠ No data"
-        chars  = str(ys.get("text_length", 0))
-        preview= (ys.get("preview","")[:120] + "…") if ys.get("preview") else "—"
-        preview = preview.replace("<","&lt;").replace(">","&gt;")
-        rows.append([yr, status, chars, preview])
-    sections.append({"type": "table", "headers": headers, "rows": rows})
+    if category == "finance":
+        totals_rows = analysis.get("totals_rows", [])
+        if totals_rows:
+            sections.append({"type": "heading2", "text": "Overall Totals Comparison"})
+            headers = ["Fiscal Year", "Period Covered", "YTD Earned", "Revised Budget", "% Collected"]
+            rows = [[
+                r["year"],
+                r.get("date_range", "—"),
+                "${:,.0f}".format(r["earned"]),
+                "${:,.0f}".format(r["budget"]),
+                "{:.1f}%".format(r["pct"]),
+            ] for r in totals_rows]
+            sections.append({"type": "table", "headers": headers, "rows": rows})
 
-    # Full previews per year
-    sections.append({"type": "pagebreak"})
-    sections.append({"type": "heading1", "text": "Document Previews by Year"})
-    for yr, text in analysis.get("raw_years", {}).items():
-        sections.append({"type": "heading2", "text": f"Fiscal Year {yr}"})
-        if text:
-            preview = text[:800].replace("<","&lt;").replace(">","&gt;")
-            sections.append({"type": "paragraph", "text": preview})
-        else:
-            sections.append({"type": "callout", "text": "No report data available for this year."})
-        sections.append({"type": "rule"})
+        line_comparison = analysis.get("line_comparison", [])
+        years = analysis.get("years", [])
+        avail_years = [y for y in years if analysis.get("year_summaries", {}).get(y, {}).get("status") == "extracted"]
+        if line_comparison and avail_years:
+            sections.append({"type": "pagebreak"})
+            sections.append({"type": "heading1", "text": "Line-Item Comparison"})
+            sections.append({"type": "paragraph",
+                "text": "Revenue Earned per account code, compared across fiscal years at the same calendar point."})
+            li_headers = ["Account", "Description"] + avail_years
+            li_rows = []
+            for row in line_comparison:
+                if not row["years"]:
+                    continue
+                r = [row["account"], row["description"][:35]]
+                for fy in avail_years:
+                    yd = row["years"].get(fy)
+                    if yd:
+                        pct_s = " ({:.0f}%)".format(yd["pct"]) if yd["pct"] is not None else ""
+                        r.append("${:,.0f}{}".format(yd["earned"], pct_s))
+                    else:
+                        r.append("—")
+                li_rows.append(r)
+            col_w = [1.6*28.35, 3.5*28.35] + [2.5*28.35]*len(avail_years)
+            sections.append({"type": "table", "headers": li_headers, "rows": li_rows,
+                              "col_widths": col_w})
+    else:
+        year_summaries = analysis.get("year_summaries", {})
+        for fy in analysis.get("years", []):
+            ys = year_summaries.get(fy, {})
+            sections.append({"type": "heading2", "text": "Fiscal Year " + fy})
+            if ys.get("status") != "extracted":
+                sections.append({"type": "callout", "text": "No data for this year."})
+                continue
+            lead = ys.get("lead", "")
+            if lead:
+                sections.append({"type": "paragraph", "text": _safe(lead)})
+            facts = ys.get("facts", [])
+            if facts:
+                sections.append({"type": "heading3", "text": "Key Statistics"})
+                for fact in facts[:6]:
+                    sections.append({"type": "bullet", "text": _safe(fact[:200])})
+            topic_content = ys.get("topic_content", {})
+            for topic, sents in list(topic_content.items())[:6]:
+                if sents:
+                    sections.append({"type": "heading3", "text": topic})
+                    for s in sents[:2]:
+                        sections.append({"type": "bullet", "text": _safe(s)})
+            sections.append({"type": "rule"})
 
     return generate_pdf(
-        title=f"{label} — Year-over-Year",
-        subtitle=f"Month: {month_str}",
-        period=f"Generated {datetime.date.today().strftime('%B %d, %Y')}",
+        title=label + " — Year-over-Year",
+        subtitle="Month: " + month_str,
+        period="Generated " + __import__("datetime").date.today().strftime("%B %d, %Y"),
         sections=sections,
         authors="BPCSD Board of Education"
     )
-
 
 # ── Build flat report lookup ──────────────────────────────────────────────────
 ALL_REPORTS = {}   # key → (category, meta)
@@ -395,93 +494,110 @@ with st.sidebar:
     # ── Session info ─────────────────────────────────────────────────────────
     signed_in_as = st.session_state.get("username", "")
     st.caption(f"✅ Signed in as **{signed_in_as}**")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("🗑 Clear Cache", use_container_width=True):
-            clear_cache()
-            st.success("Cache cleared!")
-    with col_b:
-        if st.button("🚪 Sign Out", use_container_width=True):
-            for key in ["app_authenticated", "username", "password"]:
-                st.session_state.pop(key, None)
-            # Remove any stored clients
-            for key in list(st.session_state.keys()):
-                if key.startswith("client_"):
-                    st.session_state.pop(key, None)
-            st.rerun()
+    if st.button("🚪 Sign Out", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            st.session_state.pop(key, None)
+        st.rerun()
 
     st.divider()
 
-    # ── Mode selector ────────────────────────────────────────────────────────
+    # ── Mode selector ─────────────────────────────────────────────────────────
     mode = st.radio(
-        "Analysis Mode",
-        ["📈 School Year Trend", "📊 Year-over-Year Comparison"],
+        "Mode",
+        ["📈 School Year Trend", "📊 Year-over-Year",
+         "🔍 Discover Reports", "💬 Chat with Reports", "🗑 Cache Manager"],
         label_visibility="collapsed"
     )
 
     st.divider()
 
-    # ── Cache status helper ───────────────────────────────────────────────────
-    cached_set = list_cached_reports()
+    # ── LLM API key (shown for Chat mode, stored in session) ─────────────────
+    if mode == "💬 Chat with Reports":
+        st.markdown("**AI Provider Key**")
+        st.caption(
+            "Get a free Gemini key at [aistudio.google.com](https://aistudio.google.com) "
+            "or use an OpenAI/Anthropic key."
+        )
+        api_key_input = st.text_input(
+            "API Key", type="password",
+            value=st.session_state.get("llm_api_key", ""),
+            placeholder="AIza... or sk-...",
+            key="api_key_field"
+        )
+        if api_key_input and api_key_input != st.session_state.get("llm_api_key", ""):
+            st.session_state["llm_api_key"] = api_key_input
+            st.session_state.pop("llm_client_ok", None)  # force re-validation
 
-    # ── SCHOOL YEAR TREND SIDEBAR ────────────────────────────────────────────
+        if st.session_state.get("llm_api_key"):
+            if not st.session_state.get("llm_client_ok"):
+                with st.spinner("Validating key…"):
+                    try:
+                        from modules.llm_chat import LLMClient
+                        client_llm = LLMClient.from_key(st.session_state["llm_api_key"])
+                        st.session_state["llm_client_ok"] = True
+                        st.session_state["llm_provider_label"] = client_llm.provider_label
+                        st.session_state["llm_model"] = client_llm.model
+                    except Exception as e:
+                        st.session_state["llm_client_ok"] = False
+                        st.session_state["llm_key_error"] = str(e)
+
+            if st.session_state.get("llm_client_ok"):
+                st.success(f"✅ {st.session_state.get('llm_provider_label')} ({st.session_state.get('llm_model')})")
+            else:
+                st.error(st.session_state.get("llm_key_error", "Invalid key"))
+
+        st.divider()
+
+    # ── SCHOOL YEAR TREND SIDEBAR ─────────────────────────────────────────────
     if mode == "📈 School Year Trend":
         fy_options = list(FISCAL_YEARS.keys())
         fiscal_year = st.selectbox("📅 Fiscal Year", fy_options, index=0)
-
         months_in_fy = FISCAL_YEARS.get(fiscal_year, [])
+        cached_set = list_cached_reports()
 
-        # Finance Reports
         with st.expander("💰 Finance Reports", expanded=True):
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Select All", key="sel_all_fin", use_container_width=True):
+                if st.button("All", key="sel_all_fin", use_container_width=True):
                     for k in REPORT_TYPES["finance"]["reports"]:
                         st.session_state[f"fin_{k}"] = True
             with col2:
-                if st.button("Clear All", key="clr_all_fin", use_container_width=True):
+                if st.button("None", key="clr_all_fin", use_container_width=True):
                     for k in REPORT_TYPES["finance"]["reports"]:
                         st.session_state[f"fin_{k}"] = False
-
             fin_selected = {}
             for rpt_key, rpt_meta in REPORT_TYPES["finance"]["reports"].items():
                 cached_months = sum(
                     1 for ym in months_in_fy
-                    if (rpt_key, ym.split("-")[0] + "-" + ym.split("-")[1]) in cached_set
+                    if get_cached_text(rpt_key, ym) is not None
                 )
-                cache_badge = f" ✅{cached_months}" if cached_months else ""
-                val = st.checkbox(
-                    f"{rpt_meta['label']}{cache_badge}",
-                    key=f"fin_{rpt_key}",
+                badge = f" ✅{cached_months}" if cached_months else ""
+                fin_selected[rpt_key] = st.checkbox(
+                    f"{rpt_meta['label']}{badge}", key=f"fin_{rpt_key}",
                     value=st.session_state.get(f"fin_{rpt_key}", False)
                 )
-                fin_selected[rpt_key] = val
 
-        # Director Reports
         with st.expander("📋 Director Reports", expanded=True):
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Select All", key="sel_all_dir", use_container_width=True):
+                if st.button("All", key="sel_all_dir", use_container_width=True):
                     for k in REPORT_TYPES["director"]["reports"]:
                         st.session_state[f"dir_{k}"] = True
             with col2:
-                if st.button("Clear All", key="clr_all_dir", use_container_width=True):
+                if st.button("None", key="clr_all_dir", use_container_width=True):
                     for k in REPORT_TYPES["director"]["reports"]:
                         st.session_state[f"dir_{k}"] = False
-
             dir_selected = {}
             for rpt_key, rpt_meta in REPORT_TYPES["director"]["reports"].items():
                 cached_months = sum(
                     1 for ym in months_in_fy
-                    if (rpt_key, ym.split("-")[0] + "-" + ym.split("-")[1]) in cached_set
+                    if get_cached_text(rpt_key, ym) is not None
                 )
-                cache_badge = f" ✅{cached_months}" if cached_months else ""
-                val = st.checkbox(
-                    f"{rpt_meta['label']}{cache_badge}",
-                    key=f"dir_{rpt_key}",
+                badge = f" ✅{cached_months}" if cached_months else ""
+                dir_selected[rpt_key] = st.checkbox(
+                    f"{rpt_meta['label']}{badge}", key=f"dir_{rpt_key}",
                     value=st.session_state.get(f"dir_{rpt_key}", False)
                 )
-                dir_selected[rpt_key] = val
 
         selected_reports = {
             **{k: ("finance", REPORT_TYPES["finance"]["reports"][k])
@@ -489,54 +605,109 @@ with st.sidebar:
             **{k: ("director", REPORT_TYPES["director"]["reports"][k])
                for k, v in dir_selected.items() if v},
         }
+        n_sel = len(selected_reports)
+        n_mo  = len(months_in_fy)
+        st.caption(f"{n_sel} report(s) × {n_mo} months = up to {n_sel * n_mo} fetches")
+        run_trend = st.button("🚀 Run Analysis", disabled=(n_sel == 0),
+                               type="primary", use_container_width=True)
 
-        n_selected = len(selected_reports)
-        n_months   = len(months_in_fy)
-        st.caption(f"{n_selected} report type(s) × {n_months} months = up to {n_selected * n_months} fetches")
-
-        run_trend = st.button(
-            "🚀 Generate Analysis",
-            disabled=(n_selected == 0),
-            type="primary",
-            use_container_width=True
-        )
-
-    # ── YoY COMPARISON SIDEBAR ───────────────────────────────────────────────
-    else:
-        # Flat list of all report types
+    # ── YoY SIDEBAR ───────────────────────────────────────────────────────────
+    elif mode == "📊 Year-over-Year":
         rpt_options = {}
         for cat_key, cat_val in REPORT_TYPES.items():
             for rpt_key, rpt_meta in cat_val["reports"].items():
                 rpt_options[rpt_key] = f"{cat_val['label']} › {rpt_meta['label']}"
 
         yoy_report_key = st.selectbox(
-            "Report Type",
-            options=list(rpt_options.keys()),
+            "Report Type", options=list(rpt_options.keys()),
             format_func=lambda k: rpt_options[k]
         )
         yoy_category, yoy_report_meta = ALL_REPORTS[yoy_report_key]
 
         month_keys   = list(MONTH_LABELS.keys())
-        month_labels = [MONTH_LABELS[m] for m in month_keys]
+        month_labels_list = [MONTH_LABELS[m] for m in month_keys]
         yoy_month_idx = st.selectbox(
-            "Month",
-            options=range(len(month_keys)),
-            format_func=lambda i: month_labels[i]
+            "Month", options=range(len(month_keys)),
+            format_func=lambda i: month_labels_list[i]
         )
         yoy_month_num = month_keys[yoy_month_idx]
-        yoy_month_str = month_labels[yoy_month_idx]
+        yoy_month_str = month_labels_list[yoy_month_idx]
 
         st.markdown("**Fiscal Years to Compare**")
         yoy_years_selected = {}
         for fy in FISCAL_YEARS:
             yoy_years_selected[fy] = st.checkbox(f"FY {fy}", key=f"yoy_{fy}", value=True)
 
-        run_yoy = st.button(
-            "🚀 Generate Comparison",
-            type="primary",
-            use_container_width=True,
-            disabled=not any(yoy_years_selected.values())
+        run_yoy = st.button("🚀 Run Comparison", type="primary",
+                             use_container_width=True,
+                             disabled=not any(yoy_years_selected.values()))
+
+    # ── DISCOVER REPORTS SIDEBAR ──────────────────────────────────────────────
+    elif mode == "🔍 Discover Reports":
+        st.markdown("**Discovery Options**")
+        disc_refresh = st.checkbox("Force refresh (ignore cache)", value=False)
+        run_discovery = st.button("🔍 Run Discovery", type="primary",
+                                   use_container_width=True)
+        st.caption(
+            "Discovery scans every meeting agenda, collects all attachments, "
+            "and clusters them by report type. Takes 2–5 min for a full year."
         )
+
+        catalog = get_report_catalog()
+        if catalog:
+            from modules.discovery import get_catalog_months, get_catalog_fiscal_years
+            n_sections = len(catalog)
+            all_types  = sum(len(v) for v in catalog.values())
+            all_months = get_catalog_months(catalog)
+            st.success(
+                f"✅ Catalog: {n_sections} sections, {all_types} report types, "
+                f"{len(all_months)} meetings covered"
+            )
+
+    # ── CHAT SIDEBAR ──────────────────────────────────────────────────────────
+    elif mode == "💬 Chat with Reports":
+        st.markdown("**Load Reports into Context**")
+        chat_fy = st.selectbox("Fiscal Year", list(FISCAL_YEARS.keys()), key="chat_fy")
+
+        # Which report types to load
+        st.markdown("**Include:**")
+        chat_reports = {}
+        for cat_key, cat_val in REPORT_TYPES.items():
+            for rpt_key, rpt_meta in cat_val["reports"].items():
+                has_cache = any(
+                    get_cached_text(rpt_key, ym) for ym in FISCAL_YEARS.get(chat_fy, [])
+                )
+                if has_cache:
+                    chat_reports[rpt_key] = st.checkbox(
+                        rpt_meta["label"], key=f"chat_{rpt_key}", value=False
+                    )
+
+        if not chat_reports:
+            st.caption("No cached reports found for this fiscal year. "
+                        "Run a trend analysis first to populate the cache.")
+
+        load_chat = st.button("📚 Load into Context", type="primary",
+                               use_container_width=True,
+                               disabled=not any(chat_reports.values()))
+        if st.button("🗑 Clear Chat History", use_container_width=True):
+            st.session_state.pop("chat_history", None)
+            st.session_state.pop("chat_context_docs", None)
+
+    # ── CACHE MANAGER SIDEBAR ─────────────────────────────────────────────────
+    elif mode == "🗑 Cache Manager":
+        stats = get_cache_stats()
+        st.metric("Cached text files", stats["text_entries"])
+        st.metric("Total cache size", f"{stats['total_size_kb']} KB")
+        st.metric("Meetings catalog", "✅ Ready" if stats["catalog_ready"] else "⚠️ Not built")
+
+        if st.button("🗑 Clear ALL Cache", use_container_width=True):
+            clear_all_cache()
+            st.success("All cache cleared!")
+            st.rerun()
+        if st.button("🗑 Clear Discovery Only", use_container_width=True):
+            clear_discovery_cache()
+            st.success("Discovery cache cleared — text cache kept.")
+            st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -648,7 +819,6 @@ if mode == "📈 School Year Trend" and run_trend:
         # Analyze
         if category == "finance":
             from modules.analyzer import analyze_finance_trend
-            # Map month name → text
             analysis = analyze_finance_trend(month_results)
         else:
             from modules.analyzer import analyze_director_trend
@@ -671,66 +841,92 @@ if mode == "📈 School Year Trend" and run_trend:
                 obs  = flag.get("observation", "")
                 icon = "🔴" if pri == "high" else ("🟡" if pri == "medium" else "🟢")
                 cls  = f"flag-{pri}"
-                st.markdown(
-                    f'<span class="{cls}">{icon} {item}:</span> {obs}',
-                    unsafe_allow_html=True
-                )
+                st.markdown(f'<span class="{cls}">{icon} <b>{item}</b></span> — {obs}',
+                            unsafe_allow_html=True)
 
-        # Month-by-month table
-        months_in_fy_order = FISCAL_YEARS.get(fiscal_year, [])
-        table_data = []
-        for ym in months_in_fy_order:
-            month_num  = ym.split("-")[1]
-            month_name = MONTH_LABELS.get(month_num, ym)
-            ms = analysis.get("month_summaries", {}).get(month_name, {})
-            status = ms.get("status", "no_data")
-            status_icon = "✅" if status == "extracted" else "⚠️"
+        if category == "finance":
+            # Collection rate table
+            ct = analysis.get("collection_table", [])
+            if ct:
+                st.markdown("**YTD Collection Rate by Month**")
+                import pandas as pd
+                ct_df = pd.DataFrame([{
+                    "Month":          r["month"],
+                    "YTD Earned":     f"${r['earned']:,.0f}",
+                    "Revised Budget": f"${r['budget']:,.0f}",
+                    "% Collected":    f"{r['pct']:.1f}%",
+                    "Period":         r.get("date_range",""),
+                } for r in ct])
+                st.dataframe(ct_df, use_container_width=True, hide_index=True)
 
-            row = {"Month": month_name, "Status": status_icon}
+            # Notable items (top earners)
+            notable = analysis.get("notable_items", [])
+            if notable:
+                with st.expander("📊 Top Revenue Sources (Most Recent Month)"):
+                    n_df = pd.DataFrame([{
+                        "Account":    it["account"],
+                        "Description": it["description"][:50],
+                        "YTD Earned": f"${it['earned']:,.0f}",
+                        "% of Budget": f"{it['pct_collected']:.1f}%" if it["pct_collected"] is not None else "—",
+                    } for it in notable])
+                    st.dataframe(n_df, use_container_width=True, hide_index=True)
 
-            if category == "finance":
-                row["Top Amount"] = ms.get("top_dollar", "—")
-                row["YTD %"]      = ms.get("pct_ytd", "—")
-                row["Length"]     = ms.get("text_length", 0)
-            else:
-                row["Topics"] = ", ".join(ms.get("topics", [])) or "—"
-                row["Length"] = ms.get("text_length", 0)
+            # Full line-item trend (all accounts × all months)
+            line_items = analysis.get("line_items", {})
+            ct_months = [r["month"] for r in ct]
+            if line_items and ct_months:
+                with st.expander("📈 Full Line-Item Revenue Trend (All Accounts × All Months)"):
+                    li_rows = []
+                    for acc, data in sorted(line_items.items()):
+                        row = {"Account": acc, "Description": data["description"][:40]}
+                        for m in ct_months:
+                            md = data["monthly"].get(m)
+                            if md:
+                                pct_s = f" ({md['pct']:.0f}%)" if md["pct"] is not None else ""
+                                row[m] = f"${md['earned']:,.0f}{pct_s}"
+                            else:
+                                row[m] = "—"
+                        li_rows.append(row)
+                    if li_rows:
+                        st.dataframe(pd.DataFrame(li_rows), use_container_width=True, hide_index=True)
 
-            table_data.append(row)
-
-        if table_data:
+        else:
+            # Director: month-by-month detail with real content
+            months_in_fy_order = FISCAL_YEARS.get(fiscal_year, [])
             import pandas as pd
-            df = pd.DataFrame(table_data)
-            st.dataframe(df, use_container_width=True, hide_index=True)
 
-        # Director: themes
-        if category == "director" and analysis.get("themes"):
-            with st.expander("📊 Theme Frequency Table"):
-                theme_rows = [
-                    {"Theme": t, "Months Present": len(m), "Details": ", ".join(m)}
-                    for t, m in sorted(analysis["themes"].items(), key=lambda x: -len(x[1]))
-                    if m
-                ]
-                if theme_rows:
-                    st.dataframe(pd.DataFrame(theme_rows), use_container_width=True, hide_index=True)
+            # Theme summary table
+            themes = analysis.get("themes", {})
+            if themes:
+                with st.expander("📊 Theme Frequency Table"):
+                    t_rows = [{"Theme": t, "Months": len(m), "Present In": ", ".join(m)}
+                              for t, m in sorted(themes.items(), key=lambda x: -len(x[1])) if m]
+                    if t_rows:
+                        st.dataframe(pd.DataFrame(t_rows), use_container_width=True, hide_index=True)
 
-        # Month previews
-        with st.expander("📄 Document Previews"):
+            # Per-month rich detail
             for ym in months_in_fy_order:
-                month_num  = ym.split("-")[1]
-                month_name = MONTH_LABELS.get(month_num, ym)
-                text = month_results.get(month_name)
-                if text:
-                    st.markdown(f"**{month_name}** — {len(text):,} chars")
-                    st.text_area(
-                        label=month_name,
-                        value=text[:600] + ("…" if len(text) > 600 else ""),
-                        height=100,
-                        label_visibility="collapsed",
-                        key=f"prev_{rpt_key}_{ym}"
-                    )
-                else:
-                    st.caption(f"**{month_name}** — No data")
+                month_name = MONTH_LABELS.get(ym.split("-")[1], ym)
+                ms = analysis.get("month_summaries", {}).get(month_name, {})
+                if ms.get("status") != "extracted":
+                    continue
+                with st.expander(f"📄 {month_name}"):
+                    lead = ms.get("lead","")
+                    if lead:
+                        st.markdown(f"*{lead}*")
+                    facts = ms.get("facts",[])
+                    if facts:
+                        st.markdown("**Key Numbers & Statistics**")
+                        for fact in facts[:8]:
+                            st.markdown(f"- {fact[:200]}")
+                    topic_content = ms.get("topic_content",{})
+                    if topic_content:
+                        st.markdown("**Topics Covered**")
+                        for topic, sents in topic_content.items():
+                            if sents:
+                                st.markdown(f"**{topic}**")
+                                for s in sents[:2]:
+                                    st.caption(s[:250])
 
         # Generate PDF
         with st.spinner(f"Generating PDF for {label}…"):
@@ -758,7 +954,7 @@ if mode == "📈 School Year Trend" and run_trend:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  YEAR-OVER-YEAR — RUN
 # ═══════════════════════════════════════════════════════════════════════════════
-if mode == "📊 Year-over-Year Comparison" and run_yoy:
+if mode == "📊 Year-over-Year" and run_yoy:
     st.session_state.pop("last_results", None)
 
     selected_fy = [fy for fy, v in yoy_years_selected.items() if v]
@@ -804,9 +1000,12 @@ if mode == "📊 Year-over-Year Comparison" and run_yoy:
     prog_bar.progress(1.0)
     status_msg.success("✅ All years processed!")
 
-    # Analyze
+    # Analyze — pass category so the right parser is used
     from modules.analyzer import analyze_yoy
-    analysis = analyze_yoy(reports_by_year, yoy_report_meta["label"])
+    analysis = analyze_yoy(
+        reports_by_year, yoy_report_meta["label"],
+        report_category=yoy_category
+    )
 
     st.divider()
     st.markdown(f"""
@@ -815,24 +1014,72 @@ if mode == "📊 Year-over-Year Comparison" and run_yoy:
     </div>
     """, unsafe_allow_html=True)
 
-    # Flags
     for flag in analysis.get("flags", []):
         pri  = flag.get("priority","medium")
-        icon = "🔴" if pri=="high" else ("🟡" if pri=="medium" else "🟢")
-        st.markdown(f'{icon} **{flag["item"]}:** {flag["observation"]}')
+        icon = "\U0001f534" if pri=="high" else ("\U0001f7e1" if pri=="medium" else "\U0001f7e2")
+        cls  = f"flag-{pri}"
+        st.markdown(
+            f'<span class="{cls}">{icon} <b>{flag["item"]}</b></span> — {flag["observation"]}',
+            unsafe_allow_html=True)
 
-    # Year comparison table
     import pandas as pd
-    yr_table = []
-    for yr, ys in analysis.get("year_summaries", {}).items():
-        yr_table.append({
-            "Fiscal Year": yr,
-            "Status": "✅ Extracted" if ys.get("status")=="extracted" else "⚠️ No data",
-            "Chars": ys.get("text_length", 0),
-            "Preview": ys.get("preview","")[:120]
-        })
-    if yr_table:
-        st.dataframe(pd.DataFrame(yr_table), use_container_width=True, hide_index=True)
+    if yoy_category == "finance":
+        totals_rows = analysis.get("totals_rows", [])
+        if totals_rows:
+            st.markdown("**Overall Totals Comparison**")
+            t_df = pd.DataFrame([{
+                "Fiscal Year":    r["year"],
+                "Period":         r.get("date_range",""),
+                "YTD Earned":     "${:,.0f}".format(r["earned"]),
+                "Revised Budget": "${:,.0f}".format(r["budget"]),
+                "% Collected":    "{:.1f}%".format(r["pct"]),
+            } for r in totals_rows])
+            st.dataframe(t_df, use_container_width=True, hide_index=True)
+
+        line_comparison = analysis.get("line_comparison", [])
+        years_avail = [y for y in analysis.get("years",[])
+                       if analysis.get("year_summaries",{}).get(y,{}).get("status")=="extracted"]
+        if line_comparison and years_avail:
+            with st.expander("\U0001f4c8 Line-Item Comparison (All Accounts)"):
+                li_rows = []
+                for row in line_comparison:
+                    if not row["years"]:
+                        continue
+                    r = {"Account": row["account"], "Description": row["description"][:40]}
+                    for fy in years_avail:
+                        yd = row["years"].get(fy)
+                        if yd:
+                            pct_s = " ({:.0f}%)".format(yd["pct"]) if yd["pct"] is not None else ""
+                            r[fy] = "${:,.0f}{}".format(yd["earned"], pct_s)
+                        else:
+                            r[fy] = "—"
+                    li_rows.append(r)
+                if li_rows:
+                    st.dataframe(pd.DataFrame(li_rows), use_container_width=True, hide_index=True)
+    else:
+        year_summaries = analysis.get("year_summaries", {})
+        for fy in analysis.get("years", []):
+            ys = year_summaries.get(fy, {})
+            with st.expander(f"\U0001f4c4 FY {fy}"):
+                if ys.get("status") != "extracted":
+                    st.caption("No data available.")
+                    continue
+                lead = ys.get("lead","")
+                if lead:
+                    st.markdown(f"*{lead}*")
+                facts = ys.get("facts",[])
+                if facts:
+                    st.markdown("**Key Numbers & Statistics**")
+                    for fact in facts[:8]:
+                        st.markdown(f"- {fact[:200]}")
+                topic_content = ys.get("topic_content",{})
+                if topic_content:
+                    st.markdown("**Topics Covered**")
+                    for topic, sents in topic_content.items():
+                        if sents:
+                            st.markdown(f"**{topic}**")
+                            for s in sents[:2]:
+                                st.caption(s[:250])
 
     # Previews
     for yr, text in reports_by_year.items():
@@ -866,3 +1113,254 @@ if mode == "📊 Year-over-Year Comparison" and run_yoy:
             st.error(f"PDF generation failed: {e}")
 
     st.success("🎉 Comparison complete!")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DISCOVERY MODE
+# ═══════════════════════════════════════════════════════════════════════════════
+if mode == "🔍 Discover Reports":
+    st.markdown("## 🔍 Report Discovery")
+    st.markdown(
+        "Scans every meeting agenda in BoardDocs, collects all attachments, "
+        "and automatically clusters them by report type across all years."
+    )
+
+    catalog = None if disc_refresh else get_report_catalog()
+
+    if run_discovery or (catalog is None and not run_discovery):
+        if run_discovery:
+            # Full discovery run
+            from modules.discovery import discover_all_meetings, build_report_catalog
+            from modules.cache import save_cached_meetings
+
+            st.info("🔍 Discovering meetings…")
+            prog = st.progress(0.0)
+            status_disc = st.empty()
+
+            meetings = discover_all_meetings(client)
+            save_cached_meetings(meetings)
+            status_disc.success(f"✅ Found {len(meetings)} meetings")
+
+            def disc_progress(i, total, msg):
+                prog.progress(i / max(total, 1))
+                status_disc.info(msg)
+
+            status_disc.info(f"📂 Scanning {len(meetings)} meeting agendas for attachments…")
+            catalog = build_report_catalog(client, meetings, disc_progress)
+            save_report_catalog(catalog)
+            prog.progress(1.0)
+            status_disc.success(f"✅ Discovery complete! Found {sum(len(v) for v in catalog.values())} report types across {len(catalog)} sections.")
+
+    if catalog:
+        from modules.discovery import get_catalog_months, get_catalog_fiscal_years
+        import pandas as pd
+
+        all_months = sorted(get_catalog_months(catalog))
+        fiscal_years_disc = get_catalog_fiscal_years(catalog)
+
+        # Fiscal year filter for grid
+        fy_filter = st.selectbox("Filter by Fiscal Year", ["All"] + fiscal_years_disc,
+                                  key="disc_fy_filter")
+
+        def _in_fy(ym, fy):
+            if fy == "All":
+                return True
+            yr, mo = int(ym[:4]), int(ym[5:7])
+            fy_start_yr = int(fy[:4])
+            return (yr == fy_start_yr and mo >= 7) or (yr == fy_start_yr + 1 and mo <= 6)
+
+        filtered_months = [m for m in all_months if _in_fy(m, fy_filter)]
+
+        for section_name, section_reports in sorted(catalog.items()):
+            st.markdown(f"### {section_name}")
+            grid_rows = []
+            for slug, rpt_data in sorted(section_reports.items()):
+                row = {"Report": rpt_data["label"]}
+                for ym in filtered_months:
+                    mo = MONTH_LABELS.get(ym.split("-")[1], ym)
+                    yr = ym[:4]
+                    col_label = f"{mo[:3]} {yr[2:]}"
+                    mtg = rpt_data["meetings"].get(ym)
+                    if mtg:
+                        cached = get_cached_text(slug, ym) is not None
+                        row[col_label] = "✅" if cached else "📄"
+                    else:
+                        row[col_label] = "—"
+                grid_rows.append(row)
+
+            if grid_rows:
+                df_grid = pd.DataFrame(grid_rows).set_index("Report")
+                st.dataframe(df_grid, use_container_width=True)
+
+        st.caption("✅ = cached (text extracted) | 📄 = available (not yet cached) | — = no report")
+
+        # Download report from grid
+        st.markdown("---")
+        st.markdown("### Fetch a Specific Report")
+        col_sec, col_rpt, col_mo = st.columns(3)
+        with col_sec:
+            fetch_section = st.selectbox("Section", list(catalog.keys()), key="fetch_sec")
+        with col_rpt:
+            rpts_in_sec = catalog.get(fetch_section, {})
+            fetch_slug  = st.selectbox("Report", list(rpts_in_sec.keys()),
+                                        format_func=lambda s: rpts_in_sec[s]["label"],
+                                        key="fetch_rpt")
+        with col_mo:
+            avail_months = list(catalog.get(fetch_section, {}).get(fetch_slug, {}).get("meetings", {}).keys())
+            fetch_ym = st.selectbox("Meeting Month", avail_months, key="fetch_ym")
+
+        if st.button("⬇️ Fetch & Extract", type="primary"):
+            mtg_info = catalog[fetch_section][fetch_slug]["meetings"].get(fetch_ym, {})
+            url = mtg_info.get("url")
+            if url:
+                with st.spinner(f"Downloading {mtg_info.get('filename','report')}…"):
+                    try:
+                        pdf_bytes = client.download_file(url)
+                        from modules.extractor import extract_text_from_pdf_bytes
+                        text = extract_text_from_pdf_bytes(pdf_bytes)
+                        save_cached_text(fetch_slug, fetch_ym, None, text)
+                        st.success(f"✅ Extracted {len(text):,} chars → cached as {fetch_slug}/{fetch_ym}")
+                        st.text_area("Preview", text[:800], height=200)
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+            else:
+                st.warning("No URL found for this report.")
+
+    elif not run_discovery:
+        st.info("Click **Run Discovery** in the sidebar to scan all available meetings and reports.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CHAT MODE
+# ═══════════════════════════════════════════════════════════════════════════════
+if mode == "💬 Chat with Reports":
+    st.markdown("## 💬 Chat with Board Reports")
+
+    if not st.session_state.get("llm_api_key"):
+        st.warning("Enter your AI API key in the sidebar to enable chat.")
+        st.markdown("""
+        **How to get a free Gemini API key:**
+        1. Go to [aistudio.google.com](https://aistudio.google.com)
+        2. Sign in with your Google account
+        3. Click **Get API key** → **Create API key**
+        4. Paste it in the sidebar
+
+        The free tier supports ~1,500 requests/day with a 1M-token context window — more than enough for a full year of board reports.
+        """)
+        st.stop()
+
+    if not st.session_state.get("llm_client_ok"):
+        st.error("API key validation failed. Check the key in the sidebar.")
+        st.stop()
+
+    # Load context docs when button pressed
+    if load_chat and any(chat_reports.values()):
+        context_docs = {}
+        months_in_chat_fy = FISCAL_YEARS.get(chat_fy, [])
+        for rpt_key, selected in chat_reports.items():
+            if not selected:
+                continue
+            cat_key = get_report_category(rpt_key)
+            rpt_meta = REPORT_TYPES[cat_key]["reports"][rpt_key]
+            for ym in months_in_chat_fy:
+                text = get_cached_text(rpt_key, ym)
+                if text:
+                    mo_name = MONTH_LABELS.get(ym.split("-")[1], ym)
+                    doc_title = f"{rpt_meta['label']} — {mo_name} {ym[:4]}"
+                    context_docs[doc_title] = text
+        st.session_state["chat_context_docs"] = context_docs
+        st.session_state["chat_history"] = []
+        total_chars = sum(len(v) for v in context_docs.values())
+        st.success(f"✅ Loaded {len(context_docs)} report(s) into context ({total_chars:,} chars)")
+
+    context_docs = st.session_state.get("chat_context_docs", {})
+    if not context_docs:
+        st.info("Select reports and click **Load into Context** in the sidebar to begin chatting.")
+        st.stop()
+
+    # Show what's loaded
+    with st.expander(f"📚 Context: {len(context_docs)} report(s) loaded"):
+        for title in context_docs:
+            st.caption(f"• {title} ({len(context_docs[title]):,} chars)")
+
+    # Chat interface
+    chat_history = st.session_state.get("chat_history", [])
+    for msg in chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if question := st.chat_input("Ask a question about the loaded reports…"):
+        chat_history.append({"role": "user", "content": question})
+        with st.chat_message("user"):
+            st.markdown(question)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking…"):
+                try:
+                    from modules.llm_chat import LLMClient
+                    llm = LLMClient.from_key(st.session_state["llm_api_key"])
+                    answer = llm.chat(
+                        context_docs=context_docs,
+                        history=chat_history[:-1],  # exclude the just-appended question
+                        question=question,
+                    )
+                    st.markdown(answer)
+                    chat_history.append({"role": "assistant", "content": answer})
+                except Exception as e:
+                    err = f"Error communicating with AI: {e}"
+                    st.error(err)
+                    chat_history.append({"role": "assistant", "content": err})
+
+        st.session_state["chat_history"] = chat_history
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CACHE MANAGER MODE
+# ═══════════════════════════════════════════════════════════════════════════════
+if mode == "🗑 Cache Manager":
+    st.markdown("## 🗑 Cache Manager")
+    st.markdown("View, selectively delete, or bulk-clear cached report text.")
+
+    import pandas as pd
+    inventory = get_cache_inventory()
+
+    if not inventory:
+        st.info("Cache is empty — run some analyses to populate it.")
+    else:
+        # Group by report type for display
+        grouped = {}
+        for item in inventory:
+            rt = item["report_type"]
+            grouped.setdefault(rt, []).append(item)
+
+        for rt, items in sorted(grouped.items()):
+            with st.expander(f"**{rt}** — {len(items)} cached month(s)"):
+                for item in items:
+                    col_a, col_b, col_c = st.columns([3, 1, 1])
+                    with col_a:
+                        st.caption(
+                            f"{item['meeting_ym']} — {item['size_kb']} KB — "
+                            f"{item['age_hours']:.0f}h ago"
+                        )
+                    with col_b:
+                        pass  # spacer
+                    with col_c:
+                        btn_key = f"del_{item['path']}"
+                        if st.button("Delete", key=btn_key, use_container_width=True):
+                            delete_cache_entry(item["path"])
+                            st.success(f"Deleted {item['meeting_ym']}")
+                            st.rerun()
+
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🗑 Clear All Text Cache", use_container_width=True, type="secondary"):
+            clear_all_cache()
+            st.success("All cache cleared!")
+            st.rerun()
+    with col2:
+        if st.button("🗑 Clear Discovery Only", use_container_width=True, type="secondary"):
+            clear_discovery_cache()
+            st.success("Discovery cache cleared.")
+            st.rerun()
+
