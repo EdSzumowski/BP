@@ -586,12 +586,60 @@ def analyze_director_trend(month_texts: dict) -> dict:
                     )
                 })
 
+    # Coverage and momentum flags
+    coverage_ratio = (len(available) / len(month_texts)) if month_texts else 0
+    if month_texts and coverage_ratio < 0.6:
+        flags.append({
+            "priority": "high", "item": "Low Report Coverage",
+            "observation": (
+                f"Only {len(available)} of {len(month_texts)} months have report text. "
+                "Trend conclusions are directional only until more months are available."
+            )
+        })
+
+    # High-signal change detection using extracted fact counts and topic counts.
+    if len(available) >= 2:
+        first_m, last_m = available[0], available[-1]
+        first = month_summaries[first_m]
+        last = month_summaries[last_m]
+        first_facts = len(first.get("facts", []))
+        last_facts = len(last.get("facts", []))
+        first_topics = len(first.get("topics", []))
+        last_topics = len(last.get("topics", []))
+
+        if last_facts >= first_facts + 6:
+            flags.append({
+                "priority": "low", "item": "Detail Level Increased",
+                "observation": (
+                    f"The latest report ({last_m}) includes substantially more numeric/detail statements "
+                    f"than early-year reporting ({first_m}) ({last_facts} vs {first_facts})."
+                )
+            })
+        elif first_facts >= last_facts + 6:
+            flags.append({
+                "priority": "medium", "item": "Detail Level Declined",
+                "observation": (
+                    f"The latest report ({last_m}) includes fewer concrete numeric/detail statements "
+                    f"than early-year reporting ({first_m}) ({last_facts} vs {first_facts})."
+                )
+            })
+
+        if abs(last_topics - first_topics) >= 4:
+            direction = "broadened" if last_topics > first_topics else "narrowed"
+            flags.append({
+                "priority": "low", "item": "Topic Breadth Shift",
+                "observation": (
+                    f"Topic coverage has {direction} from {first_topics} themes in {first_m} "
+                    f"to {last_topics} themes in {last_m}."
+                )
+            })
+
     # ── Summary ────────────────────────────────────────────────────────────────
     top_topics = sorted(all_topic_months.items(), key=lambda x: -len(x[1]))[:5]
     top_str = ", ".join(f"{t} ({len(m)})" for t, m in top_topics) if top_topics else "none"
     summary = (
         f"Director reports analyzed across {len(available)} months "
-        f"({len(available) + len(missing)} total in fiscal year). "
+        f"({len(available) + len(missing)} total in fiscal year, {coverage_ratio:.0%} coverage). "
         f"Top recurring themes: {top_str}."
     )
 
@@ -823,12 +871,36 @@ def _analyze_director_yoy(reports_by_year: dict, report_type: str) -> dict:
         curr_topics = all_topics_by_year.get(curr_fy, set())
         new_topics  = curr_topics - prev_topics
         gone_topics = prev_topics - curr_topics
+        shared_topics = prev_topics & curr_topics
         if new_topics:
             flags.append({"priority": "low", "item": f"New Topics in {curr_fy}",
                           "observation": f"Topics not seen in {prev_fy}: {', '.join(sorted(new_topics))}"})
         if gone_topics:
             flags.append({"priority": "low", "item": f"Topics Absent in {curr_fy}",
                           "observation": f"Topics present in {prev_fy} but absent in {curr_fy}: {', '.join(sorted(gone_topics))}"})
+
+        continuity = (len(shared_topics) / max(len(prev_topics | curr_topics), 1)) * 100
+        flags.append({
+            "priority": "low", "item": "Topic Continuity",
+            "observation": (
+                f"{len(shared_topics)} topics are shared between {prev_fy} and {curr_fy} "
+                f"({continuity:.0f}% continuity)."
+            )
+        })
+
+        prev_fact_count = len(year_summaries.get(prev_fy, {}).get("facts", []))
+        curr_fact_count = len(year_summaries.get(curr_fy, {}).get("facts", []))
+        if abs(curr_fact_count - prev_fact_count) >= 6:
+            direction = "more" if curr_fact_count > prev_fact_count else "fewer"
+            pri = "medium" if curr_fact_count < prev_fact_count else "low"
+            flags.append({
+                "priority": pri,
+                "item": "Evidence Density Shift",
+                "observation": (
+                    f"{curr_fy} includes {direction} extracted numeric/detail statements than {prev_fy} "
+                    f"({curr_fact_count} vs {prev_fact_count})."
+                )
+            })
 
     summary = (
         f"Year-over-year comparison of {report_type} at the same calendar month "

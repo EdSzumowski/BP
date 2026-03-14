@@ -1178,16 +1178,22 @@ if mode == "🔍 Discover Reports":
         from modules.discovery import get_catalog_months, get_catalog_fiscal_years
         import pandas as pd
 
-        all_months = sorted(get_catalog_months(catalog))
+        def _sort_meeting_key(key: str):
+            base = key[:7] if len(key) >= 7 else key
+            suffix = key[7:]
+            return (base, suffix)
+
+        all_months = sorted(get_catalog_months(catalog), key=_sort_meeting_key)
         fiscal_years_disc = get_catalog_fiscal_years(catalog)
 
         # Fiscal year filter for grid
         fy_filter = st.selectbox("Filter by Fiscal Year", ["All"] + fiscal_years_disc,
                                   key="disc_fy_filter")
 
-        def _in_fy(ym, fy):
+        def _in_fy(meeting_key, fy):
             if fy == "All":
                 return True
+            ym = meeting_key[:7]
             yr, mo = int(ym[:4]), int(ym[5:7])
             fy_start_yr = int(fy[:4])
             return (yr == fy_start_yr and mo >= 7) or (yr == fy_start_yr + 1 and mo <= 6)
@@ -1199,13 +1205,21 @@ if mode == "🔍 Discover Reports":
             grid_rows = []
             for slug, rpt_data in sorted(section_reports.items()):
                 row = {"Report": rpt_data["label"]}
-                for ym in filtered_months:
+                for meeting_key in filtered_months:
+                    ym = meeting_key[:7]
                     mo = MONTH_LABELS.get(ym.split("-")[1], ym)
                     yr = ym[:4]
-                    col_label = f"{mo[:3]} {yr[2:]}"
-                    mtg = rpt_data["meetings"].get(ym)
+                    suffix = meeting_key[7:]
+                    suffix_label = ""
+                    if "special" in suffix:
+                        suffix_label = " (Special)"
+                    elif "reorg" in suffix:
+                        suffix_label = " (Reorg)"
+
+                    col_label = f"{mo[:3]} {yr}{suffix_label}"
+                    mtg = rpt_data["meetings"].get(meeting_key)
                     if mtg:
-                        cached = get_cached_text(slug, ym) is not None
+                        cached = get_cached_text(slug, meeting_key) is not None
                         row[col_label] = "✅" if cached else "📄"
                     else:
                         row[col_label] = "—"
@@ -1389,4 +1403,3 @@ if mode == "🗑 Cache Manager":
             clear_discovery_cache()
             st.success("Discovery cache cleared.")
             st.rerun()
-
