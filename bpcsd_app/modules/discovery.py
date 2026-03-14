@@ -56,7 +56,6 @@ _SECTION_MAP = [
     (r"communications",              "Communications"),
     (r"curriculum",                  "Curriculum"),
     (r"transportation|building",     "Transportation & Buildings"),
-    (r"personnel|human.?resources",  "Personnel"),
     (r"public.?comment",             "Public Comment"),
     (r"consent.?agenda",             "Consent Agenda"),
     (r"new.?business",               "New Business"),
@@ -83,6 +82,28 @@ def discover_all_meetings(client) -> dict:
 
     meetings = {}
 
+    def _merge(parsed: dict):
+        """Merge parsed meetings without clobbering same-month special/reorg meetings."""
+        for key, val in parsed.items():
+            if key not in meetings:
+                meetings[key] = val
+                continue
+
+            # Prefer richer labels and preserve unique IDs by adding suffixes.
+            existing = meetings[key]
+            if existing.get("id") == val.get("id"):
+                if len(str(val.get("label", ""))) > len(str(existing.get("label", ""))):
+                    meetings[key] = val
+                continue
+
+            mtype = val.get("type", "regular")
+            candidate = f"{key}-{mtype}"
+            i = 2
+            while candidate in meetings and meetings[candidate].get("id") != val.get("id"):
+                candidate = f"{key}-{mtype}{i}"
+                i += 1
+            meetings[candidate] = val
+
     # Try the hidden dropdown used during initial discovery
     # The board's agenda edit page lists all meetings in a <select>
     try:
@@ -98,7 +119,7 @@ def discover_all_meetings(client) -> dict:
         html = r.read().decode("utf-8", errors="replace")
         parsed = _parse_meetings_list(html)
         if parsed:
-            meetings.update(parsed)
+            _merge(parsed)
     except Exception:
         pass
 
@@ -112,7 +133,7 @@ def discover_all_meetings(client) -> dict:
         html = r.read().decode("utf-8", errors="replace")
         parsed = _parse_meetings_list(html)
         if parsed:
-            meetings.update(parsed)
+            _merge(parsed)
     except Exception:
         pass
 
@@ -126,20 +147,53 @@ def discover_all_meetings(client) -> dict:
         html = r.read().decode("utf-8", errors="replace")
         parsed = _parse_meetings_list(html)
         if parsed:
-            meetings.update(parsed)
+            _merge(parsed)
     except Exception:
         pass
+
+    # Probe year-specific meeting list variants used by some BoardDocs installs.
+    # This improves discovery coverage when default pages only show one year.
+    current_year = time.gmtime().tm_year
+    for year in range(current_year - 15, current_year + 3):
+        probes = [
+            ("GET", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open&year={year}", None),
+            ("GET", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open&schoolyear={year}", None),
+            ("GET", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingList?open&year={year}", None),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"year": str(year)}),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"schoolYear": str(year)}),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"schoolyear": str(year)}),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingList?open", {"year": str(year)}),
+        ]
+        for method, url, body in probes:
+            try:
+                req = urllib.request.Request(
+                    url,
+                    data=(urllib.parse.urlencode(body).encode() if body else None),
+                    headers={
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "text/html,*/*",
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                    method=method,
+                )
+                r = client.opener.open(req, timeout=20)
+                html = r.read().decode("utf-8", errors="replace")
+                parsed = _parse_meetings_list(html)
+                if parsed:
+                    _merge(parsed)
+            except Exception:
+                continue
 
     # Seed with known-good IDs so discovery doesn't start from zero
     from modules.registry import KNOWN_MEETINGS
     for ym, info in KNOWN_MEETINGS.items():
         if ym not in meetings:
-            meetings[ym] = {
+            _merge({ym: {
                 "id":    info["id"],
                 "label": info["label"],
                 "date":  _ym_to_date(ym),
                 "type":  info.get("type", "regular"),
-            }
+            }})
 
     return dict(sorted(meetings.items()))
 
@@ -152,6 +206,12 @@ def _parse_meetings_list(html: str) -> dict:
     """
     meetings = {}
 
+    def _insert(ym: str, mtype: str, value: dict):
+        key = _meeting_key(ym, mtype, meetings)
+        if key in meetings and meetings[key].get("id") != value.get("id"):
+            key = _meeting_key(ym, f"{mtype}2", meetings)
+        meetings[key] = value
+
     # Pattern 1: <option value="ID">label</option>
     for m in re.finditer(
         r'value="([A-Z0-9]{10,16})"[^>]*>\s*([^<]{10,80}?)\s*</option>',
@@ -162,8 +222,8 @@ def _parse_meetings_list(html: str) -> dict:
         if ym:
             mtype = "reorg" if "reorg" in label.lower() else (
                 "special" if "special" in label.lower() else "regular")
-            meetings[ym] = {"id": mid, "label": label,
-                            "date": _ym_to_date(ym), "type": mtype}
+            _insert(ym, mtype, {"id": mid, "label": label,
+                                "date": _ym_to_date(ym), "type": mtype})
 
     # Pattern 2: data-meetingid="..." data-date="YYYY-MM-DD"
     for m in re.finditer(
@@ -172,16 +232,27 @@ def _parse_meetings_list(html: str) -> dict:
     ):
         mid, date = m.group(1), m.group(2)
         ym = date[:7]  # YYYY-MM
-        if ym not in meetings:
-            meetings[ym] = {"id": mid, "label": date, "date": date, "type": "regular"}
+        _insert(ym, "regular", {"id": mid, "label": date, "date": date, "type": "regular"})
 
     # Pattern 3: JSON array [{id: "...", date: "..."}]
     for m in re.finditer(r'"id"\s*:\s*"([A-Z0-9]{10,16})"[^}]*?"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"',
                           html, re.I):
         mid, date = m.group(1), m.group(2)
         ym = date[:7]
-        if ym not in meetings:
-            meetings[ym] = {"id": mid, "label": date, "date": date, "type": "regular"}
+        _insert(ym, "regular", {"id": mid, "label": date, "date": date, "type": "regular"})
+
+    # Pattern 4: JSON with m/d/YYYY dates
+    for m in re.finditer(r'"id"\s*:\s*"([A-Z0-9]{10,16})"[^}]*?"date"\s*:\s*"(\d{1,2}/\d{1,2}/\d{4})"',
+                         html, re.I):
+        mid, date = m.group(1), m.group(2)
+        mm, _dd, yyyy = date.split("/")
+        ym = f"{yyyy}-{int(mm):02d}"
+        _insert(ym, "regular", {
+            "id": mid,
+            "label": date,
+            "date": f"{yyyy}-{int(mm):02d}-01",
+            "type": "regular"
+        })
 
     return meetings
 
@@ -202,6 +273,21 @@ def _label_to_ym(label: str) -> str | None:
     if m2:
         return f"{m2.group(1)}-{m2.group(2)}"
     return None
+
+
+def _meeting_key(ym: str, mtype: str, existing: dict) -> str:
+    """Return stable key; append suffix for non-regular meetings in same month."""
+    if ym not in existing:
+        return ym
+    if mtype == "regular" and ym in existing:
+        return ym
+
+    key = f"{ym}-{mtype}"
+    i = 2
+    while key in existing:
+        key = f"{ym}-{mtype}{i}"
+        i += 1
+    return key
 
 
 def _ym_to_date(ym: str) -> str:
@@ -304,8 +390,9 @@ def _group_into_sections(raw_items: list) -> dict:
 
     for item in raw_items:
         title = item["title"]
+        level = item.get("level")
         # Check if this item is a section header
-        canonical = _canonicalize_section(title)
+        canonical = _canonicalize_section(title, level)
         if canonical:
             current_section = canonical
             if current_section not in sections:
@@ -324,8 +411,17 @@ def _group_into_sections(raw_items: list) -> dict:
     return {k: v for k, v in sections.items() if v["items"]}
 
 
-def _canonicalize_section(title: str) -> str | None:
+def _canonicalize_section(title: str, level: int | None = None) -> str | None:
     """Return canonical section name if title looks like a section header, else None."""
+    if level is not None and level >= 2:
+        return None
+
+    # Skip long, code-heavy agenda items that are likely reports/motions, not sections.
+    if len(title) > 70:
+        return None
+    if re.search(r"\b\d{3,}\b", title):
+        return None
+
     t = title.lower()
     for pattern, canonical in _SECTION_MAP:
         if re.search(pattern, t):
