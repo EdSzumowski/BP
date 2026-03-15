@@ -196,8 +196,31 @@ def fetch_report(client, meeting_ym: str, report_key: str, report_meta: dict,
                 f"🔍 Finding '{label}' agenda item in {meeting_info['label']}…")
             url, result = client.find_director_attachment(meeting_id, search_terms)
             if url is None:
-                return None, f"Not found — {result}"
-            fname = result
+                # Precision fallback: if discovery catalog exists, use Director Reports links.
+                catalog = get_report_catalog() or {}
+                dir_section = catalog.get("Director Reports", {})
+                fallback = None
+                for rpt in dir_section.values():
+                    mtg = rpt.get("meetings", {}).get(meeting_ym)
+                    if not mtg:
+                        continue
+                    txt = (rpt.get("label", "") + " " + mtg.get("item_title", "") + " " + mtg.get("filename", "")).lower()
+                    for term in search_terms:
+                        t = (term or "").lower().strip()
+                        if t and t in txt:
+                            fallback = mtg
+                            break
+                    if fallback:
+                        break
+
+                if fallback and fallback.get("url"):
+                    url = fallback["url"]
+                    fname = fallback.get("filename", "report.pdf")
+                    status_placeholder.info("🔁 Using discovered Director Reports attachment fallback…")
+                else:
+                    return None, f"Not found — {result}"
+            else:
+                fname = result
             status_placeholder.info(f"⬇️ Downloading {fname}…")
 
         pdf_bytes = client.download_file(url)
