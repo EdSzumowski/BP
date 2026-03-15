@@ -96,13 +96,19 @@ class BoardDocsClient:
         seen = set()
         # id before Xtitle
         for iid, title in re.findall(
-                r'id="([A-Z0-9]{12,16})"[^>]*?Xtitle="([^"]*)"', html, re.I):
+                r'id="([A-Z0-9]{10,20})"[^>]*?Xtitle="([^"]*)"', html, re.I):
             if iid not in seen:
                 seen.add(iid)
                 items.append((iid, title))
         # Xtitle before id
         for title, iid in re.findall(
-                r'Xtitle="([^"]*)"[^>]*?id="([A-Z0-9]{12,16})"', html, re.I):
+                r'Xtitle="([^"]*)"[^>]*?id="([A-Z0-9]{10,20})"', html, re.I):
+            if iid not in seen:
+                seen.add(iid)
+                items.append((iid, title))
+        # data-id fallback (some agenda markup variants)
+        for iid, title in re.findall(
+                r'data-id="([A-Z0-9]{10,20})"[^>]*?(?:Xtitle|data-title)="([^"]*)"', html, re.I):
             if iid not in seen:
                 seen.add(iid)
                 items.append((iid, title))
