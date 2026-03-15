@@ -14,6 +14,7 @@ sys.path.insert(0, str(APP_DIR))
 import streamlit as st
 import datetime
 import time
+import hashlib
 
 from modules.registry import (
     REPORT_TYPES, KNOWN_MEETINGS, FISCAL_YEARS, MONTH_LABELS,
@@ -195,8 +196,31 @@ def fetch_report(client, meeting_ym: str, report_key: str, report_meta: dict,
                 f"🔍 Finding '{label}' agenda item in {meeting_info['label']}…")
             url, result = client.find_director_attachment(meeting_id, search_terms)
             if url is None:
-                return None, f"Not found — {result}"
-            fname = result
+                # Precision fallback: if discovery catalog exists, use Director Reports links.
+                catalog = get_report_catalog() or {}
+                dir_section = catalog.get("Director Reports", {})
+                fallback = None
+                for rpt in dir_section.values():
+                    mtg = rpt.get("meetings", {}).get(meeting_ym)
+                    if not mtg:
+                        continue
+                    txt = (rpt.get("label", "") + " " + mtg.get("item_title", "") + " " + mtg.get("filename", "")).lower()
+                    for term in search_terms:
+                        t = (term or "").lower().strip()
+                        if t and t in txt:
+                            fallback = mtg
+                            break
+                    if fallback:
+                        break
+
+                if fallback and fallback.get("url"):
+                    url = fallback["url"]
+                    fname = fallback.get("filename", "report.pdf")
+                    status_placeholder.info("🔁 Using discovered Director Reports attachment fallback…")
+                else:
+                    return None, f"Not found — {result}"
+            else:
+                fname = result
             status_placeholder.info(f"⬇️ Downloading {fname}…")
 
         pdf_bytes = client.download_file(url)
@@ -225,6 +249,16 @@ def fetch_report(client, meeting_ym: str, report_key: str, report_meta: dict,
 def _safe(text):
     """Escape HTML special chars for PDF paragraphs."""
     return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _fmt_currency(value):
+    """Format number-like values as currency, returning em dash for missing values."""
+    if value is None:
+        return "—"
+    try:
+        return "${:,.0f}".format(float(value))
+    except (TypeError, ValueError):
+        return "—"
 
 
 def build_trend_pdf(fiscal_year: str, report_key: str, report_meta: dict,
@@ -407,8 +441,8 @@ def build_yoy_pdf(report_key: str, report_meta: dict, month_str: str,
             rows = [[
                 r["year"],
                 r.get("date_range", "—"),
-                "${:,.0f}".format(r["earned"]),
-                "${:,.0f}".format(r["budget"]),
+                _fmt_currency(r.get("earned")),
+                _fmt_currency(r.get("budget")),
                 "{:.1f}%".format(r["pct"]) if r["pct"] is not None else "—",
             ] for r in totals_rows]
             sections.append({"type": "table", "headers": headers, "rows": rows})
@@ -431,7 +465,7 @@ def build_yoy_pdf(report_key: str, report_meta: dict, month_str: str,
                     yd = row["years"].get(fy)
                     if yd:
                         pct_s = " ({:.0f}%)".format(yd["pct"]) if yd["pct"] is not None else ""
-                        r.append("${:,.0f}{}".format(yd["earned"], pct_s))
+                        r.append(f"{_fmt_currency(yd.get('earned'))}{pct_s}")
                     else:
                         r.append("—")
                 li_rows.append(r)
@@ -493,6 +527,7 @@ disc_refresh   = False
 run_discovery  = False
 run_trend      = False
 run_yoy        = False
+run_meeting_themes = False
 load_chat      = False
 chat_reports   = {}
 chat_fy        = list(FISCAL_YEARS.keys())[0] if FISCAL_YEARS else ""
@@ -525,7 +560,7 @@ with st.sidebar:
     mode = st.radio(
         "Mode",
         ["📈 School Year Trend", "📊 Year-over-Year",
-         "🔍 Discover Reports", "💬 Chat with Reports", "🗑 Cache Manager"],
+         "🔍 Discover Reports", "🧠 Meeting Themes", "💬 Chat with Reports", "🗑 Cache Manager"],
         label_visibility="collapsed"
     )
 
@@ -683,6 +718,13 @@ with st.sidebar:
                 f"✅ Catalog: {n_sections} sections, {all_types} report types, "
                 f"{len(all_months)} meetings covered"
             )
+
+    # ── MEETING THEMES SIDEBAR ─────────────────────────────────────────────
+    elif mode == "🧠 Meeting Themes":
+        st.markdown("**Meeting Theme Options**")
+        run_meeting_themes = st.button("🧠 Analyze Selected Meetings", type="primary",
+                                       use_container_width=True)
+        st.caption("Uses documents from Superintendent, Director Reports, Finance Committee, and Consent Agenda.")
 
     # ── CHAT SIDEBAR ──────────────────────────────────────────────────────────
     elif mode == "💬 Chat with Reports":
@@ -1050,8 +1092,8 @@ if mode == "📊 Year-over-Year" and run_yoy:
             t_df = pd.DataFrame([{
                 "Fiscal Year":    r["year"],
                 "Period":         r.get("date_range",""),
-                "YTD Earned":     "${:,.0f}".format(r["earned"]),
-                "Revised Budget": "${:,.0f}".format(r["budget"]),
+                "YTD Earned":     _fmt_currency(r.get("earned")),
+                "Revised Budget": _fmt_currency(r.get("budget")),
                 "% Collected":    "{:.1f}%".format(r["pct"]) if r["pct"] is not None else "—",
             } for r in totals_rows])
             st.dataframe(t_df, use_container_width=True, hide_index=True)
@@ -1070,7 +1112,7 @@ if mode == "📊 Year-over-Year" and run_yoy:
                         yd = row["years"].get(fy)
                         if yd:
                             pct_s = " ({:.0f}%)".format(yd["pct"]) if yd["pct"] is not None else ""
-                            r[fy] = "${:,.0f}{}".format(yd["earned"], pct_s)
+                            r[fy] = f"{_fmt_currency(yd.get('earned'))}{pct_s}"
                         else:
                             r[fy] = "—"
                     li_rows.append(r)
@@ -1178,16 +1220,22 @@ if mode == "🔍 Discover Reports":
         from modules.discovery import get_catalog_months, get_catalog_fiscal_years
         import pandas as pd
 
-        all_months = sorted(get_catalog_months(catalog))
+        def _sort_meeting_key(key: str):
+            base = key[:7] if len(key) >= 7 else key
+            suffix = key[7:]
+            return (base, suffix)
+
+        all_months = sorted(get_catalog_months(catalog), key=_sort_meeting_key)
         fiscal_years_disc = get_catalog_fiscal_years(catalog)
 
         # Fiscal year filter for grid
         fy_filter = st.selectbox("Filter by Fiscal Year", ["All"] + fiscal_years_disc,
                                   key="disc_fy_filter")
 
-        def _in_fy(ym, fy):
+        def _in_fy(meeting_key, fy):
             if fy == "All":
                 return True
+            ym = meeting_key[:7]
             yr, mo = int(ym[:4]), int(ym[5:7])
             fy_start_yr = int(fy[:4])
             return (yr == fy_start_yr and mo >= 7) or (yr == fy_start_yr + 1 and mo <= 6)
@@ -1199,13 +1247,21 @@ if mode == "🔍 Discover Reports":
             grid_rows = []
             for slug, rpt_data in sorted(section_reports.items()):
                 row = {"Report": rpt_data["label"]}
-                for ym in filtered_months:
+                for meeting_key in filtered_months:
+                    ym = meeting_key[:7]
                     mo = MONTH_LABELS.get(ym.split("-")[1], ym)
                     yr = ym[:4]
-                    col_label = f"{mo[:3]} {yr[2:]}"
-                    mtg = rpt_data["meetings"].get(ym)
+                    suffix = meeting_key[7:]
+                    suffix_label = ""
+                    if "special" in suffix:
+                        suffix_label = " (Special)"
+                    elif "reorg" in suffix:
+                        suffix_label = " (Reorg)"
+
+                    col_label = f"{mo[:3]} {yr}{suffix_label}"
+                    mtg = rpt_data["meetings"].get(meeting_key)
                     if mtg:
-                        cached = get_cached_text(slug, ym) is not None
+                        cached = get_cached_text(slug, meeting_key) is not None
                         row[col_label] = "✅" if cached else "📄"
                     else:
                         row[col_label] = "—"
@@ -1251,6 +1307,121 @@ if mode == "🔍 Discover Reports":
 
     elif not run_discovery:
         st.info("Click **Run Discovery** in the sidebar to scan all available meetings and reports.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MEETING THEMES MODE
+# ═══════════════════════════════════════════════════════════════════════════════
+if mode == "🧠 Meeting Themes":
+    st.markdown("## 🧠 Meeting Themes")
+    st.markdown(
+        "Select one or more meetings to identify dominant topics and the largest monetary items "
+        "from Superintendent, Director Reports, Finance Committee, and Consent Agenda attachments."
+    )
+
+    client = get_client(st.session_state["username"], st.session_state["password"])
+
+    meetings = get_cached_meetings()
+    if not meetings:
+        from modules.discovery import discover_all_meetings
+        with st.spinner("Discovering meetings…"):
+            meetings = discover_all_meetings(client)
+            save_cached_meetings(meetings)
+
+    meeting_keys = sorted(meetings.keys()) if meetings else []
+    if not meeting_keys:
+        st.warning("No meetings were discovered. Try Discover Reports mode first.")
+        st.stop()
+
+    def _meeting_label(k):
+        info = meetings.get(k, {})
+        return f"{k} - {info.get('label', info.get('date', 'Meeting'))}"
+
+    default_selected = [k for k in meeting_keys if k.startswith("2025-") or k.startswith("2026-")]
+    selected_meetings = st.multiselect(
+        "Meetings",
+        options=meeting_keys,
+        default=default_selected,
+        format_func=_meeting_label,
+    )
+
+    catalog = get_report_catalog()
+    if not catalog:
+        st.info("Run Discover Reports first to build the scoped document catalog.")
+    elif run_meeting_themes:
+        if not selected_meetings:
+            st.warning("Select at least one meeting.")
+        else:
+            from modules.extractor import extract_text_from_pdf_bytes
+            from modules.analyzer import analyze_meeting_themes
+            import pandas as pd
+
+            allowed_sections = {
+                "Finance Committee", "Director Reports",
+                "Superintendent Report", "Consent Agenda"
+            }
+            docs = []
+            seen = set()
+            for section_name, reports in catalog.items():
+                if section_name not in allowed_sections:
+                    continue
+                for report in reports.values():
+                    label = report.get("label", "Report")
+                    for mk in selected_meetings:
+                        md = report.get("meetings", {}).get(mk)
+                        if not md or not md.get("url"):
+                            continue
+                        key = (mk, md.get("url"))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+
+                        cache_key = "theme_" + hashlib.md5(md["url"].encode()).hexdigest()[:14]
+                        text = get_cached_text(cache_key, mk)
+                        if not text:
+                            try:
+                                pdf_bytes = client.download_file(md["url"])
+                                text = extract_text_from_pdf_bytes(pdf_bytes)
+                                save_cached_text(cache_key, mk, None, text)
+                            except Exception:
+                                text = ""
+
+                        docs.append({
+                            "meeting": _meeting_label(mk),
+                            "section": section_name,
+                            "label": label,
+                            "filename": md.get("filename", ""),
+                            "text": text,
+                        })
+
+            analysis = analyze_meeting_themes(docs)
+
+            st.markdown(f"""
+            <div class="summary-card">
+                <strong>Summary:</strong> {analysis.get('summary','')}
+            </div>
+            """, unsafe_allow_html=True)
+
+            themes = analysis.get("themes", [])
+            if themes:
+                st.markdown("### Top Themes")
+                st.dataframe(pd.DataFrame(themes), use_container_width=True, hide_index=True)
+            else:
+                st.caption("No clear recurring themes detected from selected documents.")
+
+            money = analysis.get("monetary_items", [])
+            if money:
+                st.markdown("### Largest Monetary Items")
+                money_df = pd.DataFrame([{
+                    "Amount": _fmt_currency(m["amount"]),
+                    "Meeting": m["meeting"],
+                    "Section": m["section"],
+                    "Report": m["report"],
+                    "Context": m["context"],
+                } for m in money])
+                st.dataframe(money_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption("No monetary items detected in selected documents.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1389,4 +1560,3 @@ if mode == "🗑 Cache Manager":
             clear_discovery_cache()
             st.success("Discovery cache cleared.")
             st.rerun()
-
