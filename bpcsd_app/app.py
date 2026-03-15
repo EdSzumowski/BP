@@ -14,6 +14,7 @@ sys.path.insert(0, str(APP_DIR))
 import streamlit as st
 import datetime
 import time
+import hashlib
 
 from modules.registry import (
     REPORT_TYPES, KNOWN_MEETINGS, FISCAL_YEARS, MONTH_LABELS,
@@ -503,6 +504,7 @@ disc_refresh   = False
 run_discovery  = False
 run_trend      = False
 run_yoy        = False
+run_meeting_themes = False
 load_chat      = False
 chat_reports   = {}
 chat_fy        = list(FISCAL_YEARS.keys())[0] if FISCAL_YEARS else ""
@@ -535,7 +537,7 @@ with st.sidebar:
     mode = st.radio(
         "Mode",
         ["📈 School Year Trend", "📊 Year-over-Year",
-         "🔍 Discover Reports", "💬 Chat with Reports", "🗑 Cache Manager"],
+         "🔍 Discover Reports", "🧠 Meeting Themes", "💬 Chat with Reports", "🗑 Cache Manager"],
         label_visibility="collapsed"
     )
 
@@ -693,6 +695,13 @@ with st.sidebar:
                 f"✅ Catalog: {n_sections} sections, {all_types} report types, "
                 f"{len(all_months)} meetings covered"
             )
+
+    # ── MEETING THEMES SIDEBAR ─────────────────────────────────────────────
+    elif mode == "🧠 Meeting Themes":
+        st.markdown("**Meeting Theme Options**")
+        run_meeting_themes = st.button("🧠 Analyze Selected Meetings", type="primary",
+                                       use_container_width=True)
+        st.caption("Uses documents from Superintendent, Director Reports, Finance Committee, and Consent Agenda.")
 
     # ── CHAT SIDEBAR ──────────────────────────────────────────────────────────
     elif mode == "💬 Chat with Reports":
@@ -1275,6 +1284,121 @@ if mode == "🔍 Discover Reports":
 
     elif not run_discovery:
         st.info("Click **Run Discovery** in the sidebar to scan all available meetings and reports.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MEETING THEMES MODE
+# ═══════════════════════════════════════════════════════════════════════════════
+if mode == "🧠 Meeting Themes":
+    st.markdown("## 🧠 Meeting Themes")
+    st.markdown(
+        "Select one or more meetings to identify dominant topics and the largest monetary items "
+        "from Superintendent, Director Reports, Finance Committee, and Consent Agenda attachments."
+    )
+
+    client = get_client(st.session_state["username"], st.session_state["password"])
+
+    meetings = get_cached_meetings()
+    if not meetings:
+        from modules.discovery import discover_all_meetings
+        with st.spinner("Discovering meetings…"):
+            meetings = discover_all_meetings(client)
+            save_cached_meetings(meetings)
+
+    meeting_keys = sorted(meetings.keys()) if meetings else []
+    if not meeting_keys:
+        st.warning("No meetings were discovered. Try Discover Reports mode first.")
+        st.stop()
+
+    def _meeting_label(k):
+        info = meetings.get(k, {})
+        return f"{k} - {info.get('label', info.get('date', 'Meeting'))}"
+
+    default_selected = [k for k in meeting_keys if k.startswith("2025-") or k.startswith("2026-")]
+    selected_meetings = st.multiselect(
+        "Meetings",
+        options=meeting_keys,
+        default=default_selected,
+        format_func=_meeting_label,
+    )
+
+    catalog = get_report_catalog()
+    if not catalog:
+        st.info("Run Discover Reports first to build the scoped document catalog.")
+    elif run_meeting_themes:
+        if not selected_meetings:
+            st.warning("Select at least one meeting.")
+        else:
+            from modules.extractor import extract_text_from_pdf_bytes
+            from modules.analyzer import analyze_meeting_themes
+            import pandas as pd
+
+            allowed_sections = {
+                "Finance Committee", "Director Reports",
+                "Superintendent Report", "Consent Agenda"
+            }
+            docs = []
+            seen = set()
+            for section_name, reports in catalog.items():
+                if section_name not in allowed_sections:
+                    continue
+                for report in reports.values():
+                    label = report.get("label", "Report")
+                    for mk in selected_meetings:
+                        md = report.get("meetings", {}).get(mk)
+                        if not md or not md.get("url"):
+                            continue
+                        key = (mk, md.get("url"))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+
+                        cache_key = "theme_" + hashlib.md5(md["url"].encode()).hexdigest()[:14]
+                        text = get_cached_text(cache_key, mk)
+                        if not text:
+                            try:
+                                pdf_bytes = client.download_file(md["url"])
+                                text = extract_text_from_pdf_bytes(pdf_bytes)
+                                save_cached_text(cache_key, mk, None, text)
+                            except Exception:
+                                text = ""
+
+                        docs.append({
+                            "meeting": _meeting_label(mk),
+                            "section": section_name,
+                            "label": label,
+                            "filename": md.get("filename", ""),
+                            "text": text,
+                        })
+
+            analysis = analyze_meeting_themes(docs)
+
+            st.markdown(f"""
+            <div class="summary-card">
+                <strong>Summary:</strong> {analysis.get('summary','')}
+            </div>
+            """, unsafe_allow_html=True)
+
+            themes = analysis.get("themes", [])
+            if themes:
+                st.markdown("### Top Themes")
+                st.dataframe(pd.DataFrame(themes), use_container_width=True, hide_index=True)
+            else:
+                st.caption("No clear recurring themes detected from selected documents.")
+
+            money = analysis.get("monetary_items", [])
+            if money:
+                st.markdown("### Largest Monetary Items")
+                money_df = pd.DataFrame([{
+                    "Amount": _fmt_currency(m["amount"]),
+                    "Meeting": m["meeting"],
+                    "Section": m["section"],
+                    "Report": m["report"],
+                    "Context": m["context"],
+                } for m in money])
+                st.dataframe(money_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption("No monetary items detected in selected documents.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

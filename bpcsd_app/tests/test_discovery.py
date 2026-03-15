@@ -1,6 +1,6 @@
 import unittest
 
-from modules.discovery import _parse_meetings_list, _group_into_sections
+from modules.discovery import _parse_meetings_list, _group_into_sections, _find_target_parent_indexes
 
 
 class DiscoveryParsingTests(unittest.TestCase):
@@ -32,6 +32,22 @@ class DiscoveryParsingTests(unittest.TestCase):
 
         self.assertIn("Consent Agenda", grouped)
         self.assertEqual(len(grouped["Consent Agenda"]["items"]), 2)
+
+    def test_target_parent_detection_is_precise(self):
+        raw_items = [
+            {"item_id": "AAAA", "title": "1. Call to Order", "level": 1},
+            {"item_id": "BBBB", "title": "3. Superintendent's Report", "level": 1},
+            {"item_id": "CCCC", "title": "4. Director Reports - Questions or Concerns", "level": 1},
+            {"item_id": "DDDD", "title": "5. Consent Agenda", "level": 1},
+            {"item_id": "EEEE", "title": "Special Education BOE Report Feb 2025", "level": 2},
+        ]
+        hits = _find_target_parent_indexes(raw_items)
+        areas = [a for a, _ in hits]
+
+        self.assertIn("Superintendent Report", areas)
+        self.assertIn("Director Reports", areas)
+        self.assertIn("Consent Agenda", areas)
+        self.assertNotIn("Special Education", areas)
 
 
 if __name__ == "__main__":

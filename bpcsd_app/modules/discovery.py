@@ -24,6 +24,7 @@ Smart clustering:
 
 import re
 import time
+import hashlib
 from collections import defaultdict
 
 # Month names used in filename normalization
@@ -61,6 +62,13 @@ _SECTION_MAP = [
     (r"new.?business",               "New Business"),
     (r"old.?business",               "Old Business"),
     (r"executive.?session",          "Executive Session"),
+]
+
+_TARGET_AREAS = [
+    ("Finance Committee", [r"finance.?committee"]),
+    ("Director Reports", [r"director.?reports", r"questions.?or.?concerns"]),
+    ("Superintendent Report", [r"superintendent"]),
+    ("Consent Agenda", [r"consent.?agenda"]),
 ]
 
 
@@ -522,8 +530,9 @@ def cluster_filenames(filenames: list[str], threshold: float = 0.5) -> dict[str,
 def build_report_catalog(client, meetings: dict,
                           progress_callback=None) -> dict:
     """
-    For every meeting, discover its agenda structure and collect all attachments.
-    Then cluster attachments by normalized filename across all meetings.
+    Precision-first catalog for board-member workflows.
+    Scopes discovery to specific agenda areas and preserves report identity by
+    agenda entry + attachment, rather than broad filename clustering.
 
     Returns catalog:
     {
@@ -542,74 +551,93 @@ def build_report_catalog(client, meetings: dict,
       ...
     }
     """
-    from modules.cache import get_cached_structure, save_cached_structure
+    from modules.cache import get_cached_agenda, save_cached_agenda
 
-    # Phase 1: collect all (section, filename, url, ym) tuples
-    all_files = []  # [{section, item_title, filename, url, meeting_ym}]
+    # Phase 1: collect scoped attachments with stable report identity
+    all_files = []  # [{section, report_slug, report_label, filename, url, meeting_ym, item_title}]
     total = len(meetings)
 
     for i, (ym, info) in enumerate(sorted(meetings.items())):
         if progress_callback:
             progress_callback(i, total, f"Scanning {info.get('label', ym)}…")
 
-        mid = info["id"]
+        meeting_id = info["id"]
 
-        # Try cache first
-        structure = get_cached_structure(mid)
-        if not structure:
+        html = get_cached_agenda(meeting_id)
+        if not html:
             try:
-                structure = discover_agenda_structure(client, mid)
-                save_cached_structure(mid, structure)
-            except Exception as e:
-                structure = {}
+                html = client.get_agenda(meeting_id)
+                save_cached_agenda(meeting_id, html)
+            except Exception:
+                html = ""
 
-        # Collect files — for Finance Committee, hit BD-GetPublicFiles on the section item
-        for section_name, sec_data in structure.items():
-            for item in sec_data.get("items", []):
-                item_id = item["item_id"]
-                item_title = item["title"]
+        raw_items = _parse_agenda_with_levels(html) if html else []
+        parent_hits = _find_target_parent_indexes(raw_items)
 
-                # Get files for this item
-                try:
-                    files = client.get_item_files(item_id)
+        for area, pidx in parent_hits:
+            parent = raw_items[pidx]
+            children = _collect_descendants(raw_items, pidx)
+
+            # Finance reports are attached at Finance Committee parent (and sometimes child entries)
+            if area == "Finance Committee":
+                candidate_items = [parent] + children
+                for cand in candidate_items:
+                    try:
+                        files = client.get_item_files(cand["item_id"])
+                    except Exception:
+                        files = []
                     for url, filename in files:
-                        _, data_ym = normalize_filename(filename)
+                        fslug, data_ym = normalize_filename(filename)
+                        report_slug = f"finance__{fslug}"
+                        report_label = _clean_label(filename)
                         all_files.append({
-                            "section":     section_name,
-                            "item_title":  item_title,
-                            "filename":    filename,
-                            "url":         url,
-                            "meeting_ym":  ym,
-                            "data_ym":     data_ym or ym,
+                            "section": area,
+                            "report_slug": report_slug,
+                            "report_label": report_label,
+                            "item_title": cand["title"],
+                            "filename": filename,
+                            "url": url,
+                            "meeting_ym": ym,
+                            "data_ym": data_ym or ym,
                         })
-                except Exception:
-                    pass
+                    time.sleep(0.05)
+                continue
 
-                time.sleep(0.1)  # be polite
-
-        # Special-case: Finance Committee section_id itself may have files
-        for section_name, sec_data in structure.items():
-            if "finance" in section_name.lower() and sec_data.get("section_id"):
+            # Superintendent / Director / Consent: attachments are on child entries.
+            for child in children:
                 try:
-                    files = client.get_item_files(sec_data["section_id"])
-                    for url, filename in files:
-                        _, data_ym = normalize_filename(filename)
-                        all_files.append({
-                            "section":     section_name,
-                            "item_title":  "Finance Committee",
-                            "filename":    filename,
-                            "url":         url,
-                            "meeting_ym":  ym,
-                            "data_ym":     data_ym or ym,
-                        })
+                    files = client.get_item_files(child["item_id"])
                 except Exception:
-                    pass
+                    files = []
+                if not files:
+                    continue
+
+                entry_label = _normalize_entry_title(child["title"])
+                multi = len(files) > 1
+                for url, filename in files:
+                    fslug, data_ym = normalize_filename(filename)
+                    base = _slugify(entry_label)
+                    report_slug = f"{_slugify(area)}__{base}__{fslug}"
+                    label = entry_label if not multi else f"{entry_label} - {_clean_label(filename)}"
+                    if len(report_slug) > 180:
+                        report_slug = report_slug[:150] + "__" + hashlib.md5(report_slug.encode()).hexdigest()[:12]
+
+                    all_files.append({
+                        "section": area,
+                        "report_slug": report_slug,
+                        "report_label": label,
+                        "item_title": child["title"],
+                        "filename": filename,
+                        "url": url,
+                        "meeting_ym": ym,
+                        "data_ym": data_ym or ym,
+                    })
+                time.sleep(0.05)
 
     if progress_callback:
         progress_callback(total, total, "Clustering report types…")
 
-    # Phase 2: cluster by section + normalized slug
-    # Group files by section first
+    # Phase 2: organize into the app catalog format
     by_section = defaultdict(list)
     for f in all_files:
         by_section[f["section"]].append(f)
@@ -618,22 +646,18 @@ def build_report_catalog(client, meetings: dict,
     for section, files in by_section.items():
         section_catalog = {}
 
-        # Cluster filenames within this section
-        filenames = [f["filename"] for f in files]
-        clusters = cluster_filenames(filenames)
+        report_groups = defaultdict(list)
+        for f in files:
+            report_groups[f["report_slug"]].append(f)
 
-        for slug, clustered_fnames in clusters.items():
-            # Representative label: longest common non-noise prefix
-            label = _make_label(clustered_fnames)
+        for slug, grouped in report_groups.items():
+            label = grouped[0]["report_label"]
             meeting_data = {}
 
-            for f in files:
-                if f["filename"] in clustered_fnames:
-                    meeting_ym = f["meeting_ym"]
-                    # If multiple files match same slug in same meeting, keep largest
-                    if meeting_ym not in meeting_data:
-                        meeting_data[meeting_ym] = f
-                    # else keep existing
+            for f in grouped:
+                meeting_ym = f["meeting_ym"]
+                if meeting_ym not in meeting_data:
+                    meeting_data[meeting_ym] = f
 
             if meeting_data:
                 section_catalog[slug] = {
@@ -648,6 +672,65 @@ def build_report_catalog(client, meetings: dict,
             catalog[section] = section_catalog
 
     return catalog
+
+
+def _find_target_parent_indexes(raw_items: list) -> list[tuple[str, int]]:
+    """Return [(target_area, index)] for agenda headers we explicitly care about."""
+    hits = []
+    for i, item in enumerate(raw_items):
+        title = item.get("title", "")
+        if not _looks_like_header(item):
+            continue
+        lt = title.lower()
+        for area, patterns in _TARGET_AREAS:
+            if any(re.search(p, lt) for p in patterns):
+                hits.append((area, i))
+                break
+    return hits
+
+
+def _looks_like_header(item: dict) -> bool:
+    level = item.get("level")
+    if level is None:
+        return True
+    return level <= 2
+
+
+def _collect_descendants(raw_items: list, parent_index: int) -> list[dict]:
+    parent = raw_items[parent_index]
+    parent_level = parent.get("level") or 1
+    out = []
+    for nxt in raw_items[parent_index + 1:]:
+        lvl = nxt.get("level") or (parent_level + 1)
+        if lvl <= parent_level:
+            break
+        out.append(nxt)
+    return out
+
+
+def _clean_label(filename: str) -> str:
+    name = re.sub(r'\.pdf$', '', filename or "", flags=re.I)
+    name = re.sub(r'\s+', ' ', name).strip(" -_,")
+    return name or "Attachment"
+
+
+def _normalize_entry_title(title: str) -> str:
+    t = re.sub(r'\s+', ' ', title or '').strip()
+    t = re.sub(r'\b(Report\s*[-:]?)\b', '', t, flags=re.I)
+    t = re.sub(
+        r'\b(January|February|March|April|May|June|July|August|September|October|November|December|'
+        r'Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b',
+        '', t, flags=re.I
+    )
+    t = re.sub(r'\b20\d{2}\b', '', t)
+    t = re.sub(r'\bBOE\b', '', t, flags=re.I)
+    t = re.sub(r'\s+', ' ', t).strip(" -_,")
+    return t or "Agenda Entry"
+
+
+def _slugify(text: str) -> str:
+    s = re.sub(r'[^a-z0-9]+', '_', (text or '').lower()).strip('_')
+    return s[:80] if s else "unknown"
 
 
 def _make_label(filenames: list[str]) -> str:

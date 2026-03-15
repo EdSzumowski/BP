@@ -913,3 +913,83 @@ def _analyze_director_yoy(reports_by_year: dict, report_type: str) -> dict:
         "year_summaries": year_summaries,
         "raw_years":      reports_by_year,
     }
+
+
+def analyze_meeting_themes(documents: list[dict]) -> dict:
+    """
+    Analyze selected meeting documents for recurring themes and notable monetary items.
+
+    documents: [{meeting, section, label, filename, text}, ...]
+    """
+    if not documents:
+        return {"summary": "No documents selected.", "themes": [], "monetary_items": []}
+
+    theme_rules = {
+        "Student Programs": [r"\bstudent\b", r"\bclub\b", r"\bactivity\b", r"\bathlet"],
+        "Staffing and Personnel": [r"\bpersonnel\b", r"\bstaff\b", r"\bappointment\b", r"\bresignation\b"],
+        "Curriculum and Instruction": [r"\bcurriculum\b", r"\binstruction\b", r"\bassessment\b", r"\bacademic\b"],
+        "Facilities and Operations": [r"\bfacilit\b", r"\btransportation\b", r"\bbuilding\b", r"\bmaintenance\b"],
+        "Finance and Budget": [r"\bbudget\b", r"\bappropriation\b", r"\brevenue\b", r"\bexpenditure\b"],
+        "Policy and Governance": [r"\bpolicy\b", r"\bconsent agenda\b", r"\bresolution\b", r"\bboard\b"],
+    }
+
+    theme_hits = {k: {"mentions": 0, "meetings": set(), "examples": []} for k in theme_rules}
+    monetary_items = []
+
+    for doc in documents:
+        text = str(doc.get("text") or "")
+        combined = f"{doc.get('label', '')}\n{doc.get('filename', '')}\n{text}"
+
+        for theme, patterns in theme_rules.items():
+            count = 0
+            for pat in patterns:
+                count += len(re.findall(pat, combined, re.I))
+            if count > 0:
+                hit = theme_hits[theme]
+                hit["mentions"] += count
+                hit["meetings"].add(doc.get("meeting", ""))
+                if len(hit["examples"]) < 3:
+                    hit["examples"].append(doc.get("label") or doc.get("filename") or "Document")
+
+        # Monetary items: capture context around dollar amounts.
+        for m in re.finditer(r"\$\s?([\d,]+(?:\.\d{2})?)", text):
+            raw = m.group(1)
+            amount = _parse_dollar(raw)
+            if amount <= 0:
+                continue
+            ctx = text[max(0, m.start() - 80): m.end() + 120]
+            ctx = re.sub(r"\s+", " ", ctx).strip()
+            monetary_items.append({
+                "amount": amount,
+                "meeting": doc.get("meeting", ""),
+                "section": doc.get("section", ""),
+                "report": doc.get("label") or doc.get("filename") or "Document",
+                "context": ctx[:260],
+            })
+
+    themes = []
+    for theme, vals in theme_hits.items():
+        if vals["mentions"] <= 0:
+            continue
+        themes.append({
+            "theme": theme,
+            "mentions": vals["mentions"],
+            "meetings": len([m for m in vals["meetings"] if m]),
+            "examples": "; ".join(vals["examples"]),
+        })
+    themes.sort(key=lambda x: x["mentions"], reverse=True)
+
+    monetary_items.sort(key=lambda x: x["amount"], reverse=True)
+    monetary_items = monetary_items[:20]
+
+    summary = (
+        f"Analyzed {len(documents)} documents across "
+        f"{len(set(d.get('meeting') for d in documents if d.get('meeting')))} meeting(s). "
+        f"Top themes: {', '.join(t['theme'] for t in themes[:4]) or 'none detected'}."
+    )
+
+    return {
+        "summary": summary,
+        "themes": themes,
+        "monetary_items": monetary_items,
+    }
