@@ -24,6 +24,7 @@ Smart clustering:
 
 import re
 import time
+import hashlib
 from collections import defaultdict
 
 # Month names used in filename normalization
@@ -56,12 +57,18 @@ _SECTION_MAP = [
     (r"communications",              "Communications"),
     (r"curriculum",                  "Curriculum"),
     (r"transportation|building",     "Transportation & Buildings"),
-    (r"personnel|human.?resources",  "Personnel"),
     (r"public.?comment",             "Public Comment"),
     (r"consent.?agenda",             "Consent Agenda"),
     (r"new.?business",               "New Business"),
     (r"old.?business",               "Old Business"),
     (r"executive.?session",          "Executive Session"),
+]
+
+_TARGET_AREAS = [
+    ("Finance Committee", [r"finance.?committee"]),
+    ("Director Reports", [r"director.?reports", r"questions.?or.?concerns"]),
+    ("Superintendent Report", [r"superintendent"]),
+    ("Consent Agenda", [r"consent.?agenda"]),
 ]
 
 
@@ -83,6 +90,28 @@ def discover_all_meetings(client) -> dict:
 
     meetings = {}
 
+    def _merge(parsed: dict):
+        """Merge parsed meetings without clobbering same-month special/reorg meetings."""
+        for key, val in parsed.items():
+            if key not in meetings:
+                meetings[key] = val
+                continue
+
+            # Prefer richer labels and preserve unique IDs by adding suffixes.
+            existing = meetings[key]
+            if existing.get("id") == val.get("id"):
+                if len(str(val.get("label", ""))) > len(str(existing.get("label", ""))):
+                    meetings[key] = val
+                continue
+
+            mtype = val.get("type", "regular")
+            candidate = f"{key}-{mtype}"
+            i = 2
+            while candidate in meetings and meetings[candidate].get("id") != val.get("id"):
+                candidate = f"{key}-{mtype}{i}"
+                i += 1
+            meetings[candidate] = val
+
     # Try the hidden dropdown used during initial discovery
     # The board's agenda edit page lists all meetings in a <select>
     try:
@@ -98,7 +127,7 @@ def discover_all_meetings(client) -> dict:
         html = r.read().decode("utf-8", errors="replace")
         parsed = _parse_meetings_list(html)
         if parsed:
-            meetings.update(parsed)
+            _merge(parsed)
     except Exception:
         pass
 
@@ -112,7 +141,7 @@ def discover_all_meetings(client) -> dict:
         html = r.read().decode("utf-8", errors="replace")
         parsed = _parse_meetings_list(html)
         if parsed:
-            meetings.update(parsed)
+            _merge(parsed)
     except Exception:
         pass
 
@@ -126,20 +155,53 @@ def discover_all_meetings(client) -> dict:
         html = r.read().decode("utf-8", errors="replace")
         parsed = _parse_meetings_list(html)
         if parsed:
-            meetings.update(parsed)
+            _merge(parsed)
     except Exception:
         pass
+
+    # Probe year-specific meeting list variants used by some BoardDocs installs.
+    # This improves discovery coverage when default pages only show one year.
+    current_year = time.gmtime().tm_year
+    for year in range(current_year - 15, current_year + 3):
+        probes = [
+            ("GET", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open&year={year}", None),
+            ("GET", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open&schoolyear={year}", None),
+            ("GET", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingList?open&year={year}", None),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"year": str(year)}),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"schoolYear": str(year)}),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingsList?open", {"schoolyear": str(year)}),
+            ("POST", f"https://go.boarddocs.com/ny/bpcsd/Board.nsf/BD-GetMeetingList?open", {"year": str(year)}),
+        ]
+        for method, url, body in probes:
+            try:
+                req = urllib.request.Request(
+                    url,
+                    data=(urllib.parse.urlencode(body).encode() if body else None),
+                    headers={
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "text/html,*/*",
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                    method=method,
+                )
+                r = client.opener.open(req, timeout=20)
+                html = r.read().decode("utf-8", errors="replace")
+                parsed = _parse_meetings_list(html)
+                if parsed:
+                    _merge(parsed)
+            except Exception:
+                continue
 
     # Seed with known-good IDs so discovery doesn't start from zero
     from modules.registry import KNOWN_MEETINGS
     for ym, info in KNOWN_MEETINGS.items():
         if ym not in meetings:
-            meetings[ym] = {
+            _merge({ym: {
                 "id":    info["id"],
                 "label": info["label"],
                 "date":  _ym_to_date(ym),
                 "type":  info.get("type", "regular"),
-            }
+            }})
 
     return dict(sorted(meetings.items()))
 
@@ -152,6 +214,12 @@ def _parse_meetings_list(html: str) -> dict:
     """
     meetings = {}
 
+    def _insert(ym: str, mtype: str, value: dict):
+        key = _meeting_key(ym, mtype, meetings)
+        if key in meetings and meetings[key].get("id") != value.get("id"):
+            key = _meeting_key(ym, f"{mtype}2", meetings)
+        meetings[key] = value
+
     # Pattern 1: <option value="ID">label</option>
     for m in re.finditer(
         r'value="([A-Z0-9]{10,16})"[^>]*>\s*([^<]{10,80}?)\s*</option>',
@@ -162,8 +230,8 @@ def _parse_meetings_list(html: str) -> dict:
         if ym:
             mtype = "reorg" if "reorg" in label.lower() else (
                 "special" if "special" in label.lower() else "regular")
-            meetings[ym] = {"id": mid, "label": label,
-                            "date": _ym_to_date(ym), "type": mtype}
+            _insert(ym, mtype, {"id": mid, "label": label,
+                                "date": _ym_to_date(ym), "type": mtype})
 
     # Pattern 2: data-meetingid="..." data-date="YYYY-MM-DD"
     for m in re.finditer(
@@ -172,16 +240,27 @@ def _parse_meetings_list(html: str) -> dict:
     ):
         mid, date = m.group(1), m.group(2)
         ym = date[:7]  # YYYY-MM
-        if ym not in meetings:
-            meetings[ym] = {"id": mid, "label": date, "date": date, "type": "regular"}
+        _insert(ym, "regular", {"id": mid, "label": date, "date": date, "type": "regular"})
 
     # Pattern 3: JSON array [{id: "...", date: "..."}]
     for m in re.finditer(r'"id"\s*:\s*"([A-Z0-9]{10,16})"[^}]*?"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"',
                           html, re.I):
         mid, date = m.group(1), m.group(2)
         ym = date[:7]
-        if ym not in meetings:
-            meetings[ym] = {"id": mid, "label": date, "date": date, "type": "regular"}
+        _insert(ym, "regular", {"id": mid, "label": date, "date": date, "type": "regular"})
+
+    # Pattern 4: JSON with m/d/YYYY dates
+    for m in re.finditer(r'"id"\s*:\s*"([A-Z0-9]{10,16})"[^}]*?"date"\s*:\s*"(\d{1,2}/\d{1,2}/\d{4})"',
+                         html, re.I):
+        mid, date = m.group(1), m.group(2)
+        mm, _dd, yyyy = date.split("/")
+        ym = f"{yyyy}-{int(mm):02d}"
+        _insert(ym, "regular", {
+            "id": mid,
+            "label": date,
+            "date": f"{yyyy}-{int(mm):02d}-01",
+            "type": "regular"
+        })
 
     return meetings
 
@@ -202,6 +281,21 @@ def _label_to_ym(label: str) -> str | None:
     if m2:
         return f"{m2.group(1)}-{m2.group(2)}"
     return None
+
+
+def _meeting_key(ym: str, mtype: str, existing: dict) -> str:
+    """Return stable key; append suffix for non-regular meetings in same month."""
+    if ym not in existing:
+        return ym
+    if mtype == "regular" and ym in existing:
+        return ym
+
+    key = f"{ym}-{mtype}"
+    i = 2
+    while key in existing:
+        key = f"{ym}-{mtype}{i}"
+        i += 1
+    return key
 
 
 def _ym_to_date(ym: str) -> str:
@@ -304,8 +398,9 @@ def _group_into_sections(raw_items: list) -> dict:
 
     for item in raw_items:
         title = item["title"]
+        level = item.get("level")
         # Check if this item is a section header
-        canonical = _canonicalize_section(title)
+        canonical = _canonicalize_section(title, level)
         if canonical:
             current_section = canonical
             if current_section not in sections:
@@ -324,8 +419,17 @@ def _group_into_sections(raw_items: list) -> dict:
     return {k: v for k, v in sections.items() if v["items"]}
 
 
-def _canonicalize_section(title: str) -> str | None:
+def _canonicalize_section(title: str, level: int | None = None) -> str | None:
     """Return canonical section name if title looks like a section header, else None."""
+    if level is not None and level >= 2:
+        return None
+
+    # Skip long, code-heavy agenda items that are likely reports/motions, not sections.
+    if len(title) > 70:
+        return None
+    if re.search(r"\b\d{3,}\b", title):
+        return None
+
     t = title.lower()
     for pattern, canonical in _SECTION_MAP:
         if re.search(pattern, t):
@@ -426,8 +530,9 @@ def cluster_filenames(filenames: list[str], threshold: float = 0.5) -> dict[str,
 def build_report_catalog(client, meetings: dict,
                           progress_callback=None) -> dict:
     """
-    For every meeting, discover its agenda structure and collect all attachments.
-    Then cluster attachments by normalized filename across all meetings.
+    Precision-first catalog for board-member workflows.
+    Scopes discovery to specific agenda areas and preserves report identity by
+    agenda entry + attachment, rather than broad filename clustering.
 
     Returns catalog:
     {
@@ -446,74 +551,93 @@ def build_report_catalog(client, meetings: dict,
       ...
     }
     """
-    from modules.cache import get_cached_structure, save_cached_structure
+    from modules.cache import get_cached_agenda, save_cached_agenda
 
-    # Phase 1: collect all (section, filename, url, ym) tuples
-    all_files = []  # [{section, item_title, filename, url, meeting_ym}]
+    # Phase 1: collect scoped attachments with stable report identity
+    all_files = []  # [{section, report_slug, report_label, filename, url, meeting_ym, item_title}]
     total = len(meetings)
 
     for i, (ym, info) in enumerate(sorted(meetings.items())):
         if progress_callback:
             progress_callback(i, total, f"Scanning {info.get('label', ym)}…")
 
-        mid = info["id"]
+        meeting_id = info["id"]
 
-        # Try cache first
-        structure = get_cached_structure(mid)
-        if not structure:
+        html = get_cached_agenda(meeting_id)
+        if not html:
             try:
-                structure = discover_agenda_structure(client, mid)
-                save_cached_structure(mid, structure)
-            except Exception as e:
-                structure = {}
+                html = client.get_agenda(meeting_id)
+                save_cached_agenda(meeting_id, html)
+            except Exception:
+                html = ""
 
-        # Collect files — for Finance Committee, hit BD-GetPublicFiles on the section item
-        for section_name, sec_data in structure.items():
-            for item in sec_data.get("items", []):
-                item_id = item["item_id"]
-                item_title = item["title"]
+        raw_items = _parse_agenda_with_levels(html) if html else []
+        parent_hits = _find_target_parent_indexes(raw_items)
 
-                # Get files for this item
-                try:
-                    files = client.get_item_files(item_id)
+        for area, pidx in parent_hits:
+            parent = raw_items[pidx]
+            children = _collect_descendants(raw_items, pidx)
+
+            # Finance reports are attached at Finance Committee parent (and sometimes child entries)
+            if area == "Finance Committee":
+                candidate_items = [parent] + children
+                for cand in candidate_items:
+                    try:
+                        files = client.get_item_files(cand["item_id"])
+                    except Exception:
+                        files = []
                     for url, filename in files:
-                        _, data_ym = normalize_filename(filename)
+                        fslug, data_ym = normalize_filename(filename)
+                        report_slug = f"finance__{fslug}"
+                        report_label = _clean_label(filename)
                         all_files.append({
-                            "section":     section_name,
-                            "item_title":  item_title,
-                            "filename":    filename,
-                            "url":         url,
-                            "meeting_ym":  ym,
-                            "data_ym":     data_ym or ym,
+                            "section": area,
+                            "report_slug": report_slug,
+                            "report_label": report_label,
+                            "item_title": cand["title"],
+                            "filename": filename,
+                            "url": url,
+                            "meeting_ym": ym,
+                            "data_ym": data_ym or ym,
                         })
-                except Exception:
-                    pass
+                    time.sleep(0.05)
+                continue
 
-                time.sleep(0.1)  # be polite
-
-        # Special-case: Finance Committee section_id itself may have files
-        for section_name, sec_data in structure.items():
-            if "finance" in section_name.lower() and sec_data.get("section_id"):
+            # Superintendent / Director / Consent: attachments are on child entries.
+            for child in children:
                 try:
-                    files = client.get_item_files(sec_data["section_id"])
-                    for url, filename in files:
-                        _, data_ym = normalize_filename(filename)
-                        all_files.append({
-                            "section":     section_name,
-                            "item_title":  "Finance Committee",
-                            "filename":    filename,
-                            "url":         url,
-                            "meeting_ym":  ym,
-                            "data_ym":     data_ym or ym,
-                        })
+                    files = client.get_item_files(child["item_id"])
                 except Exception:
-                    pass
+                    files = []
+                if not files:
+                    continue
+
+                entry_label = _normalize_entry_title(child["title"])
+                multi = len(files) > 1
+                for url, filename in files:
+                    fslug, data_ym = normalize_filename(filename)
+                    base = _slugify(entry_label)
+                    report_slug = f"{_slugify(area)}__{base}__{fslug}"
+                    label = entry_label if not multi else f"{entry_label} - {_clean_label(filename)}"
+                    if len(report_slug) > 180:
+                        report_slug = report_slug[:150] + "__" + hashlib.md5(report_slug.encode()).hexdigest()[:12]
+
+                    all_files.append({
+                        "section": area,
+                        "report_slug": report_slug,
+                        "report_label": label,
+                        "item_title": child["title"],
+                        "filename": filename,
+                        "url": url,
+                        "meeting_ym": ym,
+                        "data_ym": data_ym or ym,
+                    })
+                time.sleep(0.05)
 
     if progress_callback:
         progress_callback(total, total, "Clustering report types…")
 
-    # Phase 2: cluster by section + normalized slug
-    # Group files by section first
+    # Phase 2: organize into the app catalog format
     by_section = defaultdict(list)
     for f in all_files:
         by_section[f["section"]].append(f)
@@ -522,22 +646,18 @@ def build_report_catalog(client, meetings: dict,
     for section, files in by_section.items():
         section_catalog = {}
 
-        # Cluster filenames within this section
-        filenames = [f["filename"] for f in files]
-        clusters = cluster_filenames(filenames)
+        report_groups = defaultdict(list)
+        for f in files:
+            report_groups[f["report_slug"]].append(f)
 
-        for slug, clustered_fnames in clusters.items():
-            # Representative label: longest common non-noise prefix
-            label = _make_label(clustered_fnames)
+        for slug, grouped in report_groups.items():
+            label = grouped[0]["report_label"]
             meeting_data = {}
 
-            for f in files:
-                if f["filename"] in clustered_fnames:
-                    meeting_ym = f["meeting_ym"]
-                    # If multiple files match same slug in same meeting, keep largest
-                    if meeting_ym not in meeting_data:
-                        meeting_data[meeting_ym] = f
-                    # else keep existing
+            for f in grouped:
+                meeting_ym = f["meeting_ym"]
+                if meeting_ym not in meeting_data:
+                    meeting_data[meeting_ym] = f
 
             if meeting_data:
                 section_catalog[slug] = {
@@ -552,6 +672,65 @@ def build_report_catalog(client, meetings: dict,
             catalog[section] = section_catalog
 
     return catalog
+
+
+def _find_target_parent_indexes(raw_items: list) -> list[tuple[str, int]]:
+    """Return [(target_area, index)] for agenda headers we explicitly care about."""
+    hits = []
+    for i, item in enumerate(raw_items):
+        title = item.get("title", "")
+        if not _looks_like_header(item):
+            continue
+        lt = title.lower()
+        for area, patterns in _TARGET_AREAS:
+            if any(re.search(p, lt) for p in patterns):
+                hits.append((area, i))
+                break
+    return hits
+
+
+def _looks_like_header(item: dict) -> bool:
+    level = item.get("level")
+    if level is None:
+        return True
+    return level <= 2
+
+
+def _collect_descendants(raw_items: list, parent_index: int) -> list[dict]:
+    parent = raw_items[parent_index]
+    parent_level = parent.get("level") or 1
+    out = []
+    for nxt in raw_items[parent_index + 1:]:
+        lvl = nxt.get("level") or (parent_level + 1)
+        if lvl <= parent_level:
+            break
+        out.append(nxt)
+    return out
+
+
+def _clean_label(filename: str) -> str:
+    name = re.sub(r'\.pdf$', '', filename or "", flags=re.I)
+    name = re.sub(r'\s+', ' ', name).strip(" -_,")
+    return name or "Attachment"
+
+
+def _normalize_entry_title(title: str) -> str:
+    t = re.sub(r'\s+', ' ', title or '').strip()
+    t = re.sub(r'\b(Report\s*[-:]?)\b', '', t, flags=re.I)
+    t = re.sub(
+        r'\b(January|February|March|April|May|June|July|August|September|October|November|December|'
+        r'Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b',
+        '', t, flags=re.I
+    )
+    t = re.sub(r'\b20\d{2}\b', '', t)
+    t = re.sub(r'\bBOE\b', '', t, flags=re.I)
+    t = re.sub(r'\s+', ' ', t).strip(" -_,")
+    return t or "Agenda Entry"
+
+
+def _slugify(text: str) -> str:
+    s = re.sub(r'[^a-z0-9]+', '_', (text or '').lower()).strip('_')
+    return s[:80] if s else "unknown"
 
 
 def _make_label(filenames: list[str]) -> str:
