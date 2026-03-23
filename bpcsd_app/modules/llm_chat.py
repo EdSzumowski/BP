@@ -141,19 +141,38 @@ class LLMClient:
                 "Run: pip install google-generativeai"
             )
         genai.configure(api_key=self.api_key)
-        model = genai.GenerativeModel(
-            model_name=self.model,
-            system_instruction=system,
-        )
+
         # Build history in Gemini format
         gemini_history = []
         for msg in history:
             role = "user" if msg["role"] == "user" else "model"
             gemini_history.append({"role": role, "parts": [msg["content"]]})
 
-        chat = model.start_chat(history=gemini_history)
-        response = chat.send_message(question)
-        return response.text
+        models_to_try = [self.model]
+        for m in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
+            if m not in models_to_try:
+                models_to_try.append(m)
+
+        last_error = None
+        for model_name in models_to_try:
+            try:
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=system,
+                )
+                chat = model.start_chat(history=gemini_history)
+                response = chat.send_message(question)
+                self.model = model_name
+                return response.text
+            except Exception as e:
+                last_error = e
+                msg = str(e).lower()
+                # Retry only for model-availability type errors.
+                if "not found" in msg or "not supported" in msg or "404" in msg:
+                    continue
+                raise
+
+        raise last_error
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     def _chat_openai(self, system: str, history: list, question: str) -> str:
@@ -195,10 +214,10 @@ class LLMClient:
 
 def _default_model(provider: str) -> str:
     return {
-        "gemini":    "gemini-1.5-pro",
+        "gemini":    "gemini-1.5-flash",
         "openai":    "gpt-4o",
         "anthropic": "claude-3-5-sonnet-20241022",
-    }.get(provider, "gemini-1.5-pro")
+    }.get(provider, "gemini-1.5-flash")
 
 
 def validate_key(api_key: str) -> tuple[bool, str]:
