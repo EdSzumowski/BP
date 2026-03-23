@@ -1,0 +1,8 @@
+model = "gpt-5.4"
+
+# Treat the git repo as the project root.
+project_root_markers = [".git"]
+
+# Keep project instruction discovery simple and predictable.
+project_doc_fallback_filenames = []
+project_doc_max_bytes = 32768
