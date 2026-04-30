@@ -19,8 +19,8 @@ def fetch(url: str) -> str:
 
 
 def strip_tags(value: str) -> str:
-    value = re.sub(r'<script[\\s\\S]*?</script>', ' ', value, flags=re.I)
-    value = re.sub(r'<style[\\s\\S]*?</style>', ' ', value, flags=re.I)
+    value = re.sub(r'<script[\s\S]*?</script\s*>', ' ', value, flags=re.I)
+    value = re.sub(r'<style[\s\S]*?</style\s*>', ' ', value, flags=re.I)
     value = re.sub(r'<[^>]+>', ' ', value)
     return re.sub(r'\s+', ' ', unescape(value)).strip()
 
@@ -79,10 +79,11 @@ def main():
                     out.write(body)
                 writer.writerow([title, url, filename])
                 print(f'[{i}/{len(items)}] saved {filename}')
-                time.sleep(0.25)
             except Exception as exc:
                 writer.writerow([title, url, f'ERROR: {exc}'])
                 print(f'[{i}/{len(items)}] ERROR {title}: {exc}')
+            finally:
+                time.sleep(0.25)
 
 
 if __name__ == '__main__':

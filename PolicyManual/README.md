@@ -8,6 +8,14 @@ https://www.bpcsd.org/board-of-education/board-policies
 - `policies_index.csv` - generated index of discovered policy titles and URLs.
 
 ## Run
+From inside the `PolicyManual/` directory:
+```bash
+cd PolicyManual
 python3 download_policies.py
+```
+Or from the repository root:
+```bash
+python3 PolicyManual/download_policies.py
+```
 
 Output is written to `PolicyManual/text/`.
