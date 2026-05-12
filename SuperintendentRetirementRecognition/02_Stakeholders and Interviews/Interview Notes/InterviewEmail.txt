@@ -1,0 +1,83 @@
+Hello,
+
+Thank you for being willing to help preserve memories and reflections about Stephen Tomlinson’s life, career, and service to Broadalbin-Perth.
+
+You will receive a text file attachment containing an interview prompt. The prompt is designed to guide ChatGPT through a conversational interview with you. ChatGPT will ask one question at a time, let you answer in your own words, and then produce a transcript at the end.
+
+Please follow the steps below.
+
+## Step 1 - Open ChatGPT
+
+1. Go to https://chatgpt.com
+2. If you already have an account, sign in.
+3. If you do not have an account, you may need to create a free account using an email address.
+4. Once you are signed in, start a new chat.
+
+## Step 2 - Open the attached prompt file
+
+1. Open the text file attached to this email.
+2. Select all of the text in the file.
+
+   * On Windows: press `Ctrl + A`
+   * On Mac: press `Command + A`
+3. Copy the text.
+
+   * On Windows: press `Ctrl + C`
+   * On Mac: press `Command + C`
+
+## Step 3 - Paste the prompt into ChatGPT
+
+1. Click inside the message box in ChatGPT.
+2. Paste the copied text.
+
+   * On Windows: press `Ctrl + V`
+   * On Mac: press `Command + V`
+3. Press Enter or click the send button.
+
+ChatGPT should then begin the interview by explaining that it will ask questions one at a time.
+
+## Step 4 - Complete the interview
+
+1. Answer each question in your own words.
+2. You do not need to write perfectly. A natural, conversational answer is best.
+3. Approximate dates are fine.
+4. Stories, memories, names, and examples are especially helpful.
+5. If you do not know the answer to a question, it is fine to say so.
+6. If ChatGPT asks a follow-up question, answer it as best you can.
+7. Continue until ChatGPT tells you the interview is complete.
+
+There is no need to rush. You may answer briefly or at length, depending on what you remember.
+
+## Step 5 - Ask ChatGPT for the final transcript
+
+At the end of the interview, ChatGPT should automatically prepare a clean transcript. If it does not, type this message into ChatGPT:
+
+Please prepare the final clean transcript now so I can copy and paste it into an email.
+
+## Step 6 - Copy the transcript
+
+1. Once ChatGPT produces the final transcript, select the transcript text.
+2. Copy it.
+
+   * On Windows: press `Ctrl + C`
+   * On Mac: press `Command + C`
+
+## Step 7 - Email the transcript
+
+Please email the completed transcript to:
+
+[szumowskie@bpcsd.org](mailto:szumowskie@bpcsd.org)
+
+You may paste the transcript directly into the body of the email. If you prefer, you may also paste it into a Word document and attach it.
+
+## A few helpful tips
+
+Please do not worry about making the answers polished or formal. The goal is to capture real memories and reflections in your own words.
+
+If ChatGPT seems to stop before the interview is finished, simply type:
+
+Please continue with the next question.
+
+If you need to take a break, you can leave the ChatGPT window open and return later. If you accidentally close it, you may still be able to find the conversation in your ChatGPT history if you are signed in.
+
+Thank you again for helping with this. Your memories and perspective are valuable.
