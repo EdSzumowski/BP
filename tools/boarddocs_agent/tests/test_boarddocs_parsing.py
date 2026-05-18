@@ -9,6 +9,14 @@ def test_parse_meetings_list_from_options():
     assert meetings[0].meeting_date.isoformat() == '2026-05-12'
 
 
+def test_parse_meetings_list_from_fallback_regex_with_two_digit_year():
+    html = '<div data-meeting-id="dccnk760440c">Meeting DCCNK760440C scheduled 05/12/26 - Budget Hearing</div>'
+    meetings = parse_meetings_list(html)
+    assert len(meetings) == 1
+    assert meetings[0].meeting_id == 'DCCNK760440C'
+    assert meetings[0].meeting_date.isoformat() == '2026-05-12'
+
+
 def test_parse_agenda_and_attachments():
     html = '''
     <div class="section">Business</div>

@@ -6,7 +6,7 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
-DATE_PATTERNS = ("%Y-%m-%d", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y")
+DATE_PATTERNS = ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d", "%B %d, %Y", "%b %d, %Y", "%B %d %Y", "%b %d %Y")
 MAX_FILENAME_LENGTH = 140
 
 
@@ -50,9 +50,11 @@ def parse_date(value: str) -> date:
             return datetime.strptime(cleaned, pattern).date()
         except ValueError:
             continue
-    match = re.search(r"\b(\d{1,2}/\d{1,2}/\d{4})\b", cleaned)
+    match = re.search(r"\b(\d{1,2}/\d{1,2}/\d{2,4})\b", cleaned)
     if match:
-        return datetime.strptime(match.group(1), "%m/%d/%Y").date()
+        token = match.group(1)
+        pattern = "%m/%d/%Y" if len(token.rsplit("/", 1)[-1]) == 4 else "%m/%d/%y"
+        return datetime.strptime(token, pattern).date()
     match = re.search(r"\b([A-Z][a-z]+\s+\d{1,2},\s+\d{4})\b", cleaned)
     if match:
         return datetime.strptime(match.group(1), "%B %d, %Y").date()
