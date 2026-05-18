@@ -2,3 +2,14 @@ __pycache__/
 *.py[cod]
 PolicyManual/text/
 PolicyManual/policies_index.csv
+
+# BoardDocs agent local state and secrets
+.env
+.playwright/
+.boarddocs_session/
+**/.boarddocs_session/
+*.sqlite-wal
+*.sqlite-shm
+.playwright/**/storage_state.json
+.boarddocs_session/state.json
+.local_browser_state.json
