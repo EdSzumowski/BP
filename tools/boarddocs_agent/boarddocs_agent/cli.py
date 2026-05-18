@@ -62,7 +62,7 @@ def sync(
     end_date: Optional[str] = typer.Option(None, help="End date, default today."),
     month: Optional[str] = typer.Option(None, help="Limit to a YYYY-MM month."),
     meeting_date: Optional[str] = typer.Option(None, help="Limit to one YYYY-MM-DD meeting date."),
-    output_root: str = typer.Option("Meetings", help="Output folder."),
+    output_root: Optional[str] = typer.Option(None, help="Output folder (overrides BOARDDOCS_OUTPUT_ROOT env var)."),
     headful: bool = typer.Option(False, help="Show the browser."),
     dry_run: bool = typer.Option(False, help="Discover and plan without writing downloads."),
     force: bool = typer.Option(False, help="Re-download known source documents."),
@@ -71,6 +71,10 @@ def sync(
     """Download and process BoardDocs meetings."""
     username, password, root = _settings(output_root)
     start, end = _date_range(start_date, end_date, month, meeting_date)
+    if not headful and not (username and password) and not SESSION_STATE.exists():
+        raise typer.BadParameter(
+            "No credentials and no saved session state. Run `login --headful` first, or set BOARDDOCS_USERNAME and BOARDDOCS_PASSWORD."
+        )
     manifest = open_manifest(root)
     try:
         with BoardDocsClient(BrowserConfig(headful=headful)) as client:
@@ -84,7 +88,7 @@ def sync(
 
 
 @app.command()
-def report(output_root: str = typer.Option("Meetings", help="Output folder.")) -> None:
+def report(output_root: Optional[str] = typer.Option(None, help="Output folder (overrides BOARDDOCS_OUTPUT_ROOT env var).")) -> None:
     """Regenerate Meetings/README.md and Meetings/index.json from the manifest."""
     _username, _password, root = _settings(output_root)
     manifest = open_manifest(root)
@@ -96,7 +100,7 @@ def report(output_root: str = typer.Option("Meetings", help="Output folder.")) -
 
 
 @app.command()
-def summarize(output_root: str = typer.Option("Meetings", help="Output folder.")) -> None:
+def summarize(output_root: Optional[str] = typer.Option(None, help="Output folder (overrides BOARDDOCS_OUTPUT_ROOT env var).")) -> None:
     """Re-run extraction and summaries for already downloaded files."""
     _username, _password, root = _settings(output_root)
     manifest = open_manifest(root)
@@ -109,7 +113,7 @@ def summarize(output_root: str = typer.Option("Meetings", help="Output folder.")
 
 
 @app.command()
-def doctor(output_root: str = typer.Option("Meetings", help="Output folder.")) -> None:
+def doctor(output_root: Optional[str] = typer.Option(None, help="Output folder (overrides BOARDDOCS_OUTPUT_ROOT env var).")) -> None:
     """Check local dependencies, Playwright installation, env vars, and write access."""
     username, password, root = _settings(output_root)
     table = Table(title="BoardDocs Agent Doctor")

@@ -112,6 +112,13 @@ def process_meeting(client: BoardDocsClient, manifest: Manifest, output_root: Pa
                     stats.extraction_failures.append(f"{title}: {extraction_status}")
                     warnings.append(f"{title}: {extraction_status}")
                 details = summarize_text(title, category, text, extraction_status)
+                # Preserve the earliest first_downloaded_at across source and checksum matches
+                _fda = existing["first_downloaded_at"] if existing else None
+                if same_checksum and same_checksum["first_downloaded_at"]:
+                    _sc_fda = same_checksum["first_downloaded_at"]
+                    if not _fda or _sc_fda < _fda:
+                        _fda = _sc_fda
+                first_downloaded_at = _fda or timestamp
                 record = DocumentRecord(
                     meeting_date=meeting.meeting_date.isoformat(),
                     meeting_type=meeting.meeting_type,
@@ -122,7 +129,7 @@ def process_meeting(client: BoardDocsClient, manifest: Manifest, output_root: Pa
                     downloaded_filepath=str(downloaded_path),
                     content_type=content_type,
                     sha256_checksum=sha256_file(downloaded_path),
-                    first_downloaded_at=(existing["first_downloaded_at"] if existing else timestamp),
+                    first_downloaded_at=first_downloaded_at,
                     last_checked_at=timestamp,
                     category=category,
                     extraction_status=extraction_status,

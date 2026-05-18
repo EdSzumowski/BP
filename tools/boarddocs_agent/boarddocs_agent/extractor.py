@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from zipfile import BadZipFile
 
 
 def extract_text(path: Path) -> tuple[str, str]:
