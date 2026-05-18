@@ -10,6 +10,8 @@ def test_sanitize_filename_removes_path_and_invalid_chars():
 def test_parse_date_supports_boarddocs_labels():
     assert parse_date('May 12, 2026 - Regular Meeting').isoformat() == '2026-05-12'
     assert parse_date('05/12/2026').isoformat() == '2026-05-12'
+    assert parse_date('05/12/26').isoformat() == '2026-05-12'
+    assert parse_date('2026/05/12').isoformat() == '2026-05-12'
 
 
 def test_month_bounds():

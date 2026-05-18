@@ -187,16 +187,16 @@ def parse_meetings_list(html: str) -> list[Meeting]:
         ]
     for value, label in option_rows:
         meeting = _meeting_from_label(label, value)
-        if meeting and (meeting.meeting_id, meeting.meeting_date.isoformat()) not in seen:
+        if meeting and ((meeting.meeting_id or "").upper(), meeting.meeting_date.isoformat()) not in seen:
             meetings.append(meeting)
-            seen.add((meeting.meeting_id, meeting.meeting_date.isoformat()))
+            seen.add(((meeting.meeting_id or "").upper(), meeting.meeting_date.isoformat()))
 
-    for match in re.finditer(r'(?P<id>[A-Z0-9]{8,20}).{0,120}?(?P<date>(?:\d{1,2}/\d{1,2}/\d{4}|[A-Z][a-z]+\s+\d{1,2},\s+\d{4}))(?P<label>.{0,120})', html, re.S):
+    for match in re.finditer(r'(?P<id>(?=[A-Z0-9]{6,24}\b)(?=[A-Z0-9]*\d)[A-Z0-9]+).{0,160}?(?P<date>(?:\d{1,2}/\d{1,2}/\d{2,4}|\d{4}/\d{1,2}/\d{1,2}|[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}))(?P<label>.{0,160})', html, re.I | re.S):
         label = re.sub(r"<[^>]+>", " ", match.group("date") + " " + match.group("label"))
-        meeting = _meeting_from_label(label, match.group("id"))
-        if meeting and (meeting.meeting_id, meeting.meeting_date.isoformat()) not in seen:
+        meeting = _meeting_from_label(label, match.group("id").upper())
+        if meeting and ((meeting.meeting_id or "").upper(), meeting.meeting_date.isoformat()) not in seen:
             meetings.append(meeting)
-            seen.add((meeting.meeting_id, meeting.meeting_date.isoformat()))
+            seen.add(((meeting.meeting_id or "").upper(), meeting.meeting_date.isoformat()))
     return meetings
 
 
