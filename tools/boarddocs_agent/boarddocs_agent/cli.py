@@ -10,9 +10,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .boarddocs_client import BoardDocsClient, BrowserConfig, SESSION_STATE
+from .boarddocs_client import BrowserConfig, SESSION_STATE
 from .manifest import open_manifest
-from .downloader import sync_meetings
+from .downloader import DownloaderService
 from .trend_analysis import generate_trend_report
 from .summarize_existing import summarize_existing_downloads
 from .utils import load_dotenv, month_bounds, parse_date
@@ -50,8 +50,8 @@ def login(
 ) -> None:
     """Open BoardDocs, authenticate, and save ignored local browser state."""
     username, password, _root = _settings()
-    with BoardDocsClient(BrowserConfig(headful=headful)) as client:
-        client.login(username, password, interactive=headful or not (username and password))
+    service = DownloaderService(Path("unused"), BrowserConfig(headful=headful))
+    service.login(username, password, interactive=headful or not (username and password))
     console.print(f"[green]Saved local session state to {SESSION_STATE}[/green]")
 
 
@@ -70,15 +70,24 @@ def sync(
     """Download and process BoardDocs meetings."""
     username, password, root = _settings(output_root)
     start, end = _date_range(start_date, end_date, month, meeting_date)
-    if not headful and not (username and password) and not SESSION_STATE.exists():
+    service = DownloaderService(root, BrowserConfig(headful=headful))
+    if service.requires_saved_session(headful, username, password):
         raise typer.BadParameter(
             "No credentials and no saved session state. Run `login --headful` first, or set BOARDDOCS_USERNAME and BOARDDOCS_PASSWORD."
         )
     manifest = open_manifest(root)
     try:
-        with BoardDocsClient(BrowserConfig(headful=headful)) as client:
-            client.login(username, password, interactive=headful and not SESSION_STATE.exists())
-            stats = sync_meetings(client, manifest, root, start, end, dry_run=dry_run, force=force, limit_meetings=limit_meetings)
+        stats = service.sync(
+            manifest,
+            start,
+            end,
+            username=username,
+            password=password,
+            headful=headful,
+            dry_run=dry_run,
+            force=force,
+            limit_meetings=limit_meetings,
+        )
     finally:
         manifest.close()
     console.print(f"[green]Processed {stats.meetings_processed}/{stats.meetings_found} meetings.[/green]")

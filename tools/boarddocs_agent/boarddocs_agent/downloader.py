@@ -4,12 +4,53 @@ from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 
-from .boarddocs_client import BoardDocsClient
+from .boarddocs_client import BoardDocsClient, BrowserConfig, SESSION_STATE
 from .categorization_extraction import process_attachment_document
 from .manifest import Manifest
 from .models import DocumentRecord, Meeting, RunStats
 from .reporting import regenerate_indexes, write_run_report
 from .utils import now_stamp
+
+
+class DownloaderService:
+    """High-level downloader orchestration layer for BoardDocs flows."""
+
+    def __init__(self, output_root: Path, browser_config: BrowserConfig | None = None):
+        self.output_root = output_root
+        self.browser_config = browser_config or BrowserConfig()
+
+    def login(self, username: str | None, password: str | None, interactive: bool = False) -> None:
+        with BoardDocsClient(self.browser_config) as client:
+            client.login(username, password, interactive=interactive)
+
+    def requires_saved_session(self, headful: bool, username: str | None, password: str | None) -> bool:
+        return not headful and not (username and password) and not SESSION_STATE.exists()
+
+    def sync(
+        self,
+        manifest: Manifest,
+        start_date: date,
+        end_date: date,
+        *,
+        username: str | None,
+        password: str | None,
+        headful: bool = False,
+        dry_run: bool = False,
+        force: bool = False,
+        limit_meetings: int | None = None,
+    ) -> RunStats:
+        with BoardDocsClient(self.browser_config) as client:
+            client.login(username, password, interactive=headful and not SESSION_STATE.exists())
+            return sync_meetings(
+                client,
+                manifest,
+                self.output_root,
+                start_date,
+                end_date,
+                dry_run=dry_run,
+                force=force,
+                limit_meetings=limit_meetings,
+            )
 
 
 def meeting_dir(output_root: Path, meeting: Meeting) -> Path:
@@ -41,7 +82,7 @@ def write_agenda_files(root: Path, meeting: Meeting) -> None:
 
 def sync_meetings(client: BoardDocsClient, manifest: Manifest, output_root: Path, start_date: date, end_date: date, dry_run: bool = False, force: bool = False, limit_meetings: int | None = None) -> RunStats:
     stats = RunStats()
-    meetings = client.discover_meetings(start_date, end_date)
+    meetings = filter_meetings(client.discover_meetings(start_date, end_date), start_date, end_date)
     stats.meetings_found = len(meetings)
     if limit_meetings:
         meetings = meetings[:limit_meetings]
@@ -54,6 +95,16 @@ def sync_meetings(client: BoardDocsClient, manifest: Manifest, output_root: Path
     regenerate_indexes(output_root, manifest)
     write_run_report(output_root, stats)
     return stats
+
+
+def filter_meetings(meetings: list[Meeting], start_date: date, end_date: date) -> list[Meeting]:
+    strict: dict[tuple[str, str, str | None], Meeting] = {}
+    for meeting in meetings:
+        if not (start_date <= meeting.meeting_date <= end_date):
+            continue
+        key = (meeting.meeting_date.isoformat(), meeting.meeting_type.strip(), meeting.meeting_id)
+        strict[key] = meeting
+    return sorted(strict.values(), key=lambda item: item.meeting_date)
 
 
 def process_meeting(client: BoardDocsClient, manifest: Manifest, output_root: Path, meeting: Meeting, stats: RunStats, dry_run: bool = False, force: bool = False) -> None:
