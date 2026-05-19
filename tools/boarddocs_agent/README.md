@@ -98,6 +98,8 @@ The codebase uses a 3-module architecture that preserves the existing CLI comman
 
 Backward compatibility is preserved by keeping legacy module entry points and routing them into the new modules.
 
+Downloader orchestration is centralized in `boarddocs_agent/downloader.py` via `DownloaderService`, so the CLI delegates session checks, login, meeting sync flow, and strict date-window filtering without changing command names or output paths.
+
 ## Idempotence
 
 The downloader checks the manifest by stable source URL plus meeting date and document title. After download, it computes a SHA-256 checksum. If the same source is already present, the tool updates `last_checked_at` instead of duplicating the file. If a remote file changes and `--force` is used, the new version is saved with a `__v2` style suffix when needed.
