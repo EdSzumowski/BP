@@ -3,6 +3,7 @@ import json
 from boarddocs_agent.manifest import open_manifest
 from boarddocs_agent.models import DocumentRecord
 from boarddocs_agent.trend_analysis import aggregate_cross_month, detect_anomalies, top_entities
+from boarddocs_agent.utils import slug_category
 
 
 def _doc(**kwargs):
@@ -45,5 +46,39 @@ def test_anomaly_detection_source_linked(tmp_path):
         assert 'missing_file' in serialized
         assert 'extraction_issue' in serialized
         assert 'sources' in serialized
+    finally:
+        manifest.close()
+
+
+def test_structured_outputs_are_preferred(tmp_path):
+    manifest = open_manifest(tmp_path)
+    try:
+        meeting_root = tmp_path / "Meetings" / "2026-05-12"
+        downloaded_path = meeting_root / "Budget" / "Budget.pdf"
+        downloaded_path.parent.mkdir(parents=True, exist_ok=True)
+        downloaded_path.write_text("placeholder", encoding="utf-8")
+
+        structured_root = meeting_root / "summaries" / "extracted_documents"
+        structured_root.mkdir(parents=True, exist_ok=True)
+        structured_root.joinpath(f"{slug_category('Budget')}__{downloaded_path.stem}.json").write_text(json.dumps({
+            "classification": {"report_family": "budget_update"},
+            "extraction": {"normalized_fields": {
+                "dollar_amounts": "$999.00",
+                "people_departments": "Structured Office",
+                "keywords": "structured, priority",
+            }},
+        }), encoding="utf-8")
+
+        manifest.upsert_document(_doc(
+            downloaded_filepath=str(downloaded_path),
+            dollar_amounts="$1.00",
+            people_departments="Manifest Office",
+            keywords="manifest",
+        ))
+        monthly = aggregate_cross_month(manifest)
+        assert monthly['2026-05']['amount_total'] == 999.0
+        assert monthly['2026-05']['families']['budget_update'] == 1
+        tops = top_entities(manifest, top_n=1)
+        assert tops[0] == ('Structured Office', 1)
     finally:
         manifest.close()

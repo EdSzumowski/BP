@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .manifest import Manifest
 from .reporting import regenerate_indexes
+from .utils import slug_category
 
 FINANCE_FAMILY_HINTS = (
     "treasurer",
@@ -58,8 +59,7 @@ def _read_structured_output(doc: dict) -> dict:
     structured = downloaded.parent.parent / "summaries" / "extracted_documents"
     if not structured.exists():
         return {}
-    prefix = re.sub(r"[^a-z0-9]+", "_", (doc.get("category") or "other").lower()).strip("_") or "other"
-    target = structured / f"{prefix}__{downloaded.stem}.json"
+    target = structured / f"{slug_category(doc.get('category') or 'other')}__{downloaded.stem}.json"
     if not target.exists():
         return {}
     try:
