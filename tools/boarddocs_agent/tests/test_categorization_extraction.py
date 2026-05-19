@@ -33,7 +33,7 @@ def test_persist_extracted_outputs_writes_structured_json_with_provenance(tmp_pa
         text='example text',
         normalized_fields={'keywords': 'treasurer', 'dates_mentioned': '', 'dollar_amounts': '', 'people_departments': ''},
     )
-    json_path = tmp_path / 'summaries' / 'extracted_documents' / 'May.json'
+    json_path = tmp_path / 'summaries' / 'extracted_documents' / 'Claims_and_Audits_and_Treasurer__May.json'
     assert json_path.exists()
     payload = json_path.read_text(encoding='utf-8')
     assert 'provenance' in payload

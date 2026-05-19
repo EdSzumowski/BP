@@ -51,13 +51,14 @@ def normalize_extraction_fields(text: str, extraction_status: str) -> dict[str, 
 
 
 def persist_extracted_outputs(*, meeting_root: Path, downloaded_path: Path, record: DocumentRecord, text: str, normalized_fields: dict[str, str]) -> None:
-    extracted_path = meeting_root / "summaries" / "extracted_text" / f"{downloaded_path.stem}.txt"
+    artifact_stem = f"{slug_category(record.category)}__{downloaded_path.stem}"
+    extracted_path = meeting_root / "summaries" / "extracted_text" / f"{artifact_stem}.txt"
     extracted_path.parent.mkdir(parents=True, exist_ok=True)
     extracted_path.write_text(text, encoding="utf-8")
 
     structured_root = meeting_root / "summaries" / "extracted_documents"
     structured_root.mkdir(parents=True, exist_ok=True)
-    structured_path = structured_root / f"{downloaded_path.stem}.json"
+    structured_path = structured_root / f"{artifact_stem}.json"
     payload = {
         "provenance": {
             "meeting_date": record.meeting_date,
