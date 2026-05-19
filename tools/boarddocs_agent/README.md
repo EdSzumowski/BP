@@ -95,7 +95,7 @@ The codebase uses a 3-module architecture that preserves the existing CLI comman
 
 - downloader module - login/session flow, meeting discovery, strict meeting filtering by date window, agenda attachment downloads, and manifest source updates.
 - categorization_extraction module - document category assignment, report-family detection, normalized field extraction, extracted text persistence, and structured per-document JSON outputs linked to document provenance.
-- trend_analysis module - cross-month aggregation inputs, financial and narrative trend helpers, top entity summaries, anomaly detection, and trend report generation wrappers.
+- trend_analysis module - cross-month aggregation, financial trend detection, narrative trend detection, top recipient and top entity ranking, explainable anomaly detection with source links, and trend report generation into Meetings/trend_report.json.
 
 Backward compatibility is preserved by keeping legacy module entry points and routing them into the new modules.
 
