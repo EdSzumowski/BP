@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import sys
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -13,8 +12,8 @@ from rich.table import Table
 
 from .boarddocs_client import BoardDocsClient, BrowserConfig, SESSION_STATE
 from .manifest import open_manifest
-from .processor import sync_meetings
-from .reporting import regenerate_indexes
+from .downloader import sync_meetings
+from .trend_analysis import generate_trend_report
 from .summarize_existing import summarize_existing_downloads
 from .utils import load_dotenv, month_bounds, parse_date
 
@@ -93,7 +92,7 @@ def report(output_root: Optional[str] = typer.Option(None, help="Output folder (
     _username, _password, root = _settings(output_root)
     manifest = open_manifest(root)
     try:
-        regenerate_indexes(root, manifest)
+        generate_trend_report(root, manifest)
     finally:
         manifest.close()
     console.print(f"[green]Regenerated {root / 'README.md'} and {root / 'index.json'}[/green]")
@@ -106,7 +105,7 @@ def summarize(output_root: Optional[str] = typer.Option(None, help="Output folde
     manifest = open_manifest(root)
     try:
         count = summarize_existing_downloads(root, manifest)
-        regenerate_indexes(root, manifest)
+        generate_trend_report(root, manifest)
     finally:
         manifest.close()
     console.print(f"[green]Updated summaries for {count} documents.[/green]")
