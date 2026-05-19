@@ -83,6 +83,7 @@ Meetings/
       summaries/
         summary.md
         extracted_text/
+        extracted_documents/
 ```
 
 Each manifest record tracks meeting date, meeting type, agenda title, agenda item title, document title, source URL, downloaded path, content type, checksum, first download time, last checked time, category, extraction status, and summary path.
@@ -93,7 +94,7 @@ Each manifest record tracks meeting date, meeting type, agenda title, agenda ite
 The codebase uses a 3-module architecture that preserves the existing CLI commands and output paths.
 
 - downloader module - login/session flow, meeting discovery, strict meeting filtering by date window, agenda attachment downloads, and manifest source updates.
-- categorization_extraction module - document category assignment, report-family detection, normalized field extraction, extracted text persistence, and structured per-document manifest outputs.
+- categorization_extraction module - document category assignment, report-family detection, normalized field extraction, extracted text persistence, and structured per-document JSON outputs linked to document provenance.
 - trend_analysis module - cross-month aggregation inputs, financial and narrative trend helpers, top entity summaries, anomaly detection, and trend report generation wrappers.
 
 Backward compatibility is preserved by keeping legacy module entry points and routing them into the new modules.
