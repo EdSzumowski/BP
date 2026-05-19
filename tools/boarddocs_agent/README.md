@@ -91,15 +91,25 @@ Each manifest record tracks meeting date, meeting type, agenda title, agenda ite
 
 ## Architecture
 
-The codebase uses a 3-module architecture that preserves the existing CLI commands and output paths.
+The codebase uses a 3-module architecture that preserves existing CLI commands and output paths.
 
-- downloader module - login/session flow, meeting discovery, strict meeting filtering by date window, agenda attachment downloads, and manifest source updates.
-- categorization_extraction module - document category assignment, report-family detection, normalized field extraction, extracted text persistence, and structured per-document JSON outputs linked to document provenance.
-- trend_analysis module - cross-month aggregation, financial trend detection, narrative trend detection, top entity ranking, explainable anomaly detection with source links, and trend report generation into Meetings/trend_report.json.
+- downloader - session/login orchestration, meeting discovery, strict date filtering, attachment download orchestration, and manifest writes.
+- categorization_extraction - per-document category assignment, report family classification, text extraction normalization, and extraction artifact persistence with provenance.
+- trend_analysis - cross-month aggregation from manifest plus extraction artifacts, trend and anomaly detection, and `Meetings/trend_report.json` generation.
 
-Backward compatibility is preserved by keeping legacy module entry points and routing them into the new modules.
+Execution flow for `sync`:
 
-Downloader orchestration is centralized in `boarddocs_agent/downloader.py` via `DownloaderService`, so the CLI delegates session checks, login, meeting sync flow, and strict date-window filtering without changing command names or output paths.
+1. `cli.py` resolves date range and auth settings, then calls `DownloaderService.sync`.
+2. `downloader.py` discovers meetings and iterates agenda attachments.
+3. `categorization_extraction.py` downloads one attachment, classifies it, extracts fields, writes extraction artifacts, and upserts the manifest.
+4. `downloader.py` writes meeting summary and run report, then regenerates indexes.
+
+Compatibility shims are intentionally narrow:
+
+- `boarddocs_agent/processor.py` re-exports downloader functions for legacy imports.
+- `categorization_extraction.persist_extracted_outputs` remains as a shim alias to `write_extraction_artifacts`.
+
+New download and per-document extraction logic should be added in `downloader.py` and `categorization_extraction.py` respectively. Cross-document analytics logic should be added in `trend_analysis.py`.
 
 ## Idempotence
 

@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
+import json
 
 from .boarddocs_client import BoardDocsClient, BrowserConfig, SESSION_STATE
-from .categorization_extraction import process_attachment_document
+from .categorization_extraction import process_attachment_document, record_from_manifest_row
 from .manifest import Manifest
 from .models import DocumentRecord, Meeting, RunStats
 from .reporting import regenerate_indexes, write_run_report
@@ -76,7 +77,6 @@ def write_agenda_files(root: Path, meeting: Meeting) -> None:
             for item in meeting.agenda_items
         ],
     }
-    import json
     (root / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
 
@@ -133,7 +133,7 @@ def process_meeting(client: BoardDocsClient, manifest: Manifest, output_root: Pa
                 reason = f"{record.document_title}: already downloaded"
                 stats.skipped.append(reason)
                 skipped.append(reason)
-                manifest.upsert_document(_record_from_existing(manifest.find_by_source(record.meeting_date, record.document_title, record.original_url), timestamp))
+                manifest.upsert_document(record_from_manifest_row(manifest.find_by_source(record.meeting_date, record.document_title, record.original_url), timestamp))
                 meeting_records.append(record)
             elif status == "dry_run":
                 stats.documents_skipped += 1
@@ -161,12 +161,3 @@ def process_meeting(client: BoardDocsClient, manifest: Manifest, output_root: Pa
     if not dry_run:
         from .summarizer import write_meeting_summary
         write_meeting_summary(meeting, meeting_records, skipped, warnings, root / "summaries" / "summary.md")
-
-
-def _record_from_existing(existing, timestamp: str) -> DocumentRecord:
-    data = dict(existing or {})
-    data.pop("id", None)
-    data.pop("source_key", None)
-    data["last_checked_at"] = timestamp
-    allowed = DocumentRecord.__dataclass_fields__.keys()
-    return DocumentRecord(**{key: data.get(key) for key in allowed})

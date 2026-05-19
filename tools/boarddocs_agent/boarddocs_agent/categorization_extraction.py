@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Mapping, Any
 
 from .classifier import classify_document
 from .extractor import extract_signals, extract_text
@@ -50,7 +51,7 @@ def normalize_extraction_fields(text: str, extraction_status: str) -> dict[str, 
     }
 
 
-def persist_extracted_outputs(*, meeting_root: Path, downloaded_path: Path, record: DocumentRecord, text: str, normalized_fields: dict[str, str]) -> None:
+def write_extraction_artifacts(*, meeting_root: Path, downloaded_path: Path, record: DocumentRecord, text: str, normalized_fields: dict[str, str]) -> None:
     artifact_stem = f"{slug_category(record.category)}__{downloaded_path.stem}"
     extracted_path = meeting_root / "summaries" / "extracted_text" / f"{artifact_stem}.txt"
     extracted_path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +81,17 @@ def persist_extracted_outputs(*, meeting_root: Path, downloaded_path: Path, reco
         },
     }
     structured_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def persist_extracted_outputs(*, meeting_root: Path, downloaded_path: Path, record: DocumentRecord, text: str, normalized_fields: dict[str, str]) -> None:
+    """Compatibility shim for pre-refactor call sites."""
+    write_extraction_artifacts(
+        meeting_root=meeting_root,
+        downloaded_path=downloaded_path,
+        record=record,
+        text=text,
+        normalized_fields=normalized_fields,
+    )
 
 
 def process_attachment_document(*, client, manifest: Manifest, meeting: Meeting, item: AgendaItem, attachment: Attachment, meeting_root: Path, dry_run: bool = False, force: bool = False) -> tuple[DocumentRecord | None, str]:
@@ -128,7 +140,7 @@ def process_attachment_document(*, client, manifest: Manifest, meeting: Meeting,
             source_section=item.section,
             **details,
         )
-        persist_extracted_outputs(
+        write_extraction_artifacts(
             meeting_root=meeting_root,
             downloaded_path=downloaded_path,
             record=record,
@@ -141,10 +153,15 @@ def process_attachment_document(*, client, manifest: Manifest, meeting: Meeting,
         return None, f"error:{exc}"
 
 
-def _record_from_existing(existing, timestamp: str) -> DocumentRecord:
+def record_from_manifest_row(existing: Mapping[str, Any], timestamp: str) -> DocumentRecord:
     data = dict(existing)
     data.pop("id", None)
     data.pop("source_key", None)
     data["last_checked_at"] = timestamp
     allowed = DocumentRecord.__dataclass_fields__.keys()
     return DocumentRecord(**{key: data.get(key) for key in allowed})
+
+
+def _record_from_existing(existing, timestamp: str) -> DocumentRecord:
+    """Compatibility shim for tests/imports using the old helper name."""
+    return record_from_manifest_row(existing, timestamp)
