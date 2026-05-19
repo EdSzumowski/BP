@@ -87,6 +87,17 @@ Meetings/
 
 Each manifest record tracks meeting date, meeting type, agenda title, agenda item title, document title, source URL, downloaded path, content type, checksum, first download time, last checked time, category, extraction status, and summary path.
 
+
+## Architecture
+
+The codebase uses a 3-module architecture that preserves the existing CLI commands and output paths.
+
+- downloader module - login/session flow, meeting discovery, strict meeting filtering by date window, agenda attachment downloads, and manifest source updates.
+- categorization_extraction module - document category assignment, report-family detection, normalized field extraction, extracted text persistence, and structured per-document manifest outputs.
+- trend_analysis module - cross-month aggregation inputs, financial and narrative trend helpers, top entity summaries, anomaly detection, and trend report generation wrappers.
+
+Backward compatibility is preserved by keeping legacy module entry points and routing them into the new modules.
+
 ## Idempotence
 
 The downloader checks the manifest by stable source URL plus meeting date and document title. After download, it computes a SHA-256 checksum. If the same source is already present, the tool updates `last_checked_at` instead of duplicating the file. If a remote file changes and `--force` is used, the new version is saved with a `__v2` style suffix when needed.
