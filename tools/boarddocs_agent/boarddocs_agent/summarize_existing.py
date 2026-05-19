@@ -9,7 +9,7 @@ from .manifest import Manifest
 
 def summarize_existing_downloads(output_root: Path, manifest: Manifest) -> int:
     from .categorization_extraction import process_attachment_document
-    from .models import AgendaAttachment, AgendaItem, Meeting
+    from .models import AgendaItem, Attachment, Meeting
 
     count = 0
     for row in manifest.all_documents():
@@ -18,7 +18,11 @@ def summarize_existing_downloads(output_root: Path, manifest: Manifest) -> int:
             continue
         meeting = Meeting(row.get("meeting_id"), date.fromisoformat(row["meeting_date"]), row["meeting_type"], row["agenda_title"])
         item = AgendaItem(row.get("agenda_item_id"), row.get("agenda_item_title") or "", row.get("source_section") or "")
-        attachment = AgendaAttachment(row.get("document_title") or "", Path(filepath).name, row.get("original_url") or "")
+        attachment = Attachment(
+            title=row.get("document_title") or "",
+            url=row.get("original_url") or "",
+            filename=Path(filepath).name,
+        )
         process_attachment_document(
             client=_LocalFileClient(Path(filepath), row.get("content_type") or "application/octet-stream"),
             manifest=manifest,

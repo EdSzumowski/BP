@@ -91,6 +91,10 @@ def process_meeting(client: BoardDocsClient, manifest: Manifest, output_root: Pa
                 stats.documents_skipped += 1
                 stats.skipped.append(f"{record.document_title}: duplicate checksum")
                 meeting_records.append(record)
+                if record.extraction_status != "ok":
+                    msg = f"{record.document_title}: {record.extraction_status}"
+                    stats.extraction_failures.append(msg)
+                    warnings.append(msg)
             elif status == "downloaded" and record is not None:
                 stats.documents_downloaded += 1
                 stats.downloaded.append(record.downloaded_filepath)

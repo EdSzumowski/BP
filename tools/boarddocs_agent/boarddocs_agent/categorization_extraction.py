@@ -5,12 +5,12 @@ from pathlib import Path
 from .classifier import classify_document
 from .extractor import extract_text
 from .manifest import Manifest
-from .models import AgendaAttachment, AgendaItem, DocumentRecord, Meeting
+from .models import AgendaItem, Attachment, DocumentRecord, Meeting
 from .summarizer import summarize_text
 from .utils import ensure_unique_path, now_stamp, sanitize_filename, sha256_file, slug_category
 
 
-def process_attachment_document(*, client, manifest: Manifest, meeting: Meeting, item: AgendaItem, attachment: AgendaAttachment, meeting_root: Path, dry_run: bool = False, force: bool = False) -> tuple[DocumentRecord | None, str]:
+def process_attachment_document(*, client, manifest: Manifest, meeting: Meeting, item: AgendaItem, attachment: Attachment, meeting_root: Path, dry_run: bool = False, force: bool = False) -> tuple[DocumentRecord | None, str]:
     title = attachment.title or attachment.filename or "attachment"
     category = classify_document(item.section, item.title, title)
     filename = sanitize_filename(attachment.filename or title)
